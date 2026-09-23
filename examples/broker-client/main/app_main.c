@@ -33,6 +33,17 @@ static bool manual_hold;
 static bool first_start_attempted;
 static unsigned cycle;
 
+static uint32_t payload_crc32(const uint8_t *payload, size_t length)
+{
+    uint32_t crc = UINT32_MAX;
+    for (size_t i = 0; i < length; ++i) {
+        crc ^= payload[i];
+        for (unsigned bit = 0; bit < 8; ++bit)
+            crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
+    }
+    return ~crc;
+}
+
 static bool copy_text(char *destination, size_t capacity, const char *source)
 {
     size_t length = strlen(source);
@@ -167,10 +178,30 @@ static void command(const char *name)
         error = runtime ? emqtt_subscribe(runtime, sample_dynamic_topic, 1) : ESP_ERR_INVALID_STATE;
     } else if (!strcmp(name, "unsubscribe")) {
         error = runtime ? emqtt_unsubscribe(runtime, sample_dynamic_topic) : ESP_ERR_INVALID_STATE;
-    } else if (!strcmp(name, "publish")) {
+    } else if (!strcmp(name, "publish") || !strcmp(name, "publish0") || !strcmp(name, "publish4k")) {
+        static char large_payload[EMQTT_PAYLOAD_MAX];
+        const bool large = !strcmp(name, "publish4k");
+        if (large) memset(large_payload, 'A', sizeof(large_payload));
         error = runtime && emqtt_state(runtime) == EMQTT_READY ?
-            emqtt_enqueue(runtime, sample_publish_topic, "ping", 4, 1, false, &message_id)
+            emqtt_enqueue(runtime, sample_publish_topic, large ? large_payload : "ping",
+                          large ? sizeof(large_payload) : 4u,
+                          !strcmp(name, "publish0") ? 0 : 1, false, &message_id)
                         : ESP_ERR_INVALID_STATE;
+    } else if (!strcmp(name, "fill")) {
+        static char large_payload[EMQTT_PAYLOAD_MAX];
+        unsigned accepted = 0;
+        error = ESP_ERR_INVALID_STATE;
+        if (runtime && emqtt_state(runtime) == EMQTT_DISCONNECTED) {
+            memset(large_payload, 'A', sizeof(large_payload));
+            for (unsigned i = 0; i < 8; ++i) {
+                error = emqtt_enqueue(runtime, sample_publish_topic, large_payload,
+                                      sizeof(large_payload), 1, false, &message_id);
+                if (error != ESP_OK) { message_id = -1; break; }
+                ++accepted;
+            }
+        }
+        printf("EMQTT_SAMPLE fill_accepted=%u fill_error=%d outbox=%d\n",
+               accepted, error, runtime ? emqtt_outbox_size(runtime) : -1);
     } else if (!strcmp(name, "wifi_down")) {
         wifi_wanted = false;
         error = esp_wifi_stop();
@@ -182,6 +213,7 @@ static void command(const char *name)
         return;
     }
     printf("EMQTT_SAMPLE command=%s error=%d message_id=%d cycle=%u\n", name, error, message_id, cycle);
+    if (!strcmp(name, "cycle")) report("cycle");
 }
 
 static void serial_input(void)
@@ -238,13 +270,17 @@ void app_main(void)
             printf("EMQTT_SAMPLE start_error=%d\n", error);
         }
         while (runtime && emqtt_poll(runtime, &event_output)) {
+            const bool message = event_output.kind == EMQTT_EVENT_MESSAGE;
             printf("EMQTT_SAMPLE_EVENT kind=%d error=%d message_id=%d broker_code=%d tls_flags=%d"
-                   " topic=%s length=%zu duplicate=%u\n",
+                   " topic=%s length=%zu qos=%u retain=%u duplicate=%u crc32=%08" PRIx32 "\n",
                    event_output.kind, event_output.error, event_output.message_id,
                    event_output.broker_code, event_output.tls_flags,
-                   event_output.kind == EMQTT_EVENT_MESSAGE ? event_output.message.topic : "",
-                   event_output.kind == EMQTT_EVENT_MESSAGE ? event_output.message.length : 0u,
-                   event_output.kind == EMQTT_EVENT_MESSAGE ? (unsigned)event_output.message.duplicate : 0u);
+                   message ? event_output.message.topic : "",
+                   message ? event_output.message.length : 0u,
+                   message ? (unsigned)event_output.message.qos : 0u,
+                   message ? (unsigned)event_output.message.retain : 0u,
+                   message ? (unsigned)event_output.message.duplicate : 0u,
+                   message ? payload_crc32(event_output.message.payload, event_output.message.length) : 0u);
             if (event_output.kind == EMQTT_EVENT_READY) {
                 int message_id = -1;
                 error = emqtt_enqueue(runtime, config.will_topic, "online", 6, 1, true, &message_id);
