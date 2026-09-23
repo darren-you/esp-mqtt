@@ -33,7 +33,7 @@
 
 本轮读取的原 ESP-IDF checkout 位于固定 `fff9895...`，`git status --short` 为空，内含原 lwIP `c6f2f878e7b0f86033214b85547d579be43351e3`；没有发现 IDF 本体其他源码差异。已准备的独立 SDK 同为固定 IDF 提交，唯一故意工作树差异是 `components/lwip/lwip` 指向公开修正 `2758df4...`。`tools/sdk.py check` 已对这份独立 SDK 通过，组件 CMake 要求同一 SDK 和内建 lwIP 组件路径。此结论只覆盖本轮两份具体 checkout 与 MQTT 相关输入，不声称所有机器的 SDK 都相同。
 
-当前构建锁已切至[公开 ESP-IDF fork](https://github.com/darren-you/esp-idf) `855937cf9dcee13ee9c423fb0319238cdc8d53fd`，父提交仍是上述官方 `fff9895...`；fork 仅修复 `esp_ota_begin` 擦除失败时的句柄泄漏。上段保留 P3a 当时的来源核对记录。当前 SDK 检查还核对 IDF 与 lwIP 的完整提交和唯一 lwIP gitlink 差异。
+当前构建锁已切至[公开 ESP-IDF fork](https://github.com/darren-you/esp-idf) `578cf89c343e388db43ba1f4ddcd602fedcb763c`，其父提交 `855937cf9dcee13ee9c423fb0319238cdc8d53fd` 修复 `esp_ota_begin` 擦除失败时的句柄泄漏，新提交修复 `esp_http_client_init` 失败时未加入 transport list 的句柄泄漏；最初的官方基线仍是 `fff9895...`。上段保留 P3a 当时的来源核对记录。当前 SDK 检查还核对 IDF 与 lwIP 的完整提交和唯一 lwIP gitlink 差异。
 
 `esp-base@f3c1e3d34a02d97a88494871f042a3398b2255bb` 已将隔离实验应用的精确 MQTT 依赖升至本仓 `9cac455b0184420353ff0283df3f100abaac3e6b`，并以同一 IDF/lwIP 版本对构建默认与实验 C3 工程。该提交当时尚未在普通固件启用 MQTT；后续 `esp-base@ecf1539` 已接入普通 MQTT owner 与设备命令。
 
