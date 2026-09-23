@@ -153,6 +153,27 @@ int main(void)
     assert(emqtt_start(r, true, true) == ESP_OK);
     current_task = 2; assert(emqtt_stop(r) == ESP_ERR_INVALID_STATE); current_task = 1;
     connect_ready(r);
+    /* 回执按实际到达时刻判定；owner 晚些 poll 不应误报超时。 */
+    assert(emqtt_subscribe(r, "unit/timely", 0) == ESP_OK);
+    char timely_grant = 0;
+    emit(MQTT_EVENT_PUBLISHED, (esp_mqtt_event_t){.msg_id = 77});
+    emit(MQTT_EVENT_SUBSCRIBED, (esp_mqtt_event_t){.msg_id = 31, .data = &timely_grant, .data_len = 1});
+    now_us += 10000001;
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_PUBACK);
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_READY);
+    assert(emqtt_unsubscribe(r, "unit/timely") == ESP_OK);
+    emit(MQTT_EVENT_UNSUBSCRIBED, (esp_mqtt_event_t){.msg_id = 32});
+    now_us += 10000001;
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_UNSUBSCRIBED);
+    /* 超时后才到达的回执即使在 poll 前入队，也不能被接受。 */
+    assert(emqtt_subscribe(r, "unit/late", 0) == ESP_OK);
+    now_us += 10000001;
+    emit(MQTT_EVENT_SUBSCRIBED, (esp_mqtt_event_t){.msg_id = 31, .data = &timely_grant, .data_len = 1});
+    assert(emqtt_poll(r, &output) && output.error == EMQTT_ERROR_SUBSCRIPTION && !sdk.started);
+    assert(emqtt_destroy(r) == ESP_OK);
+    c = config();
+    assert(emqtt_create(&c, &r) == ESP_OK);
+    assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
     int id = -100;
     enqueue_result = -2;
     assert(emqtt_enqueue(r, "unit/out", "x", 1, 1, false, &id) == ESP_ERR_EMQTT_OUTBOX_FULL && id == -100);
@@ -259,6 +280,7 @@ int main(void)
     assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
     assert(emqtt_unsubscribe(r, "unit/in") == ESP_OK);
     now_us += 10000001;
+    emit(MQTT_EVENT_UNSUBSCRIBED, (esp_mqtt_event_t){.msg_id = 32});
     assert(emqtt_poll(r, &output) && output.error == EMQTT_ERROR_SUBSCRIPTION && !sdk.started);
     assert(emqtt_start(r, true, true) == ESP_OK);
     emit(MQTT_EVENT_CONNECTED, (esp_mqtt_event_t){0});

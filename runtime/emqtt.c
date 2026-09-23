@@ -25,6 +25,7 @@
 
 typedef struct {
     int kind, message_id, slot, broker_code, tls_flags;
+    int64_t arrived_us;
     emqtt_error_t error;
     uint8_t suback[EMQTT_SUBSCRIPTIONS_MAX];
     size_t suback_count;
@@ -65,7 +66,8 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     (void)base;
     emqtt_runtime_t *r = arg;
     const esp_mqtt_event_t *event = data;
-    notice_t n = {.slot = -1, .message_id = event->msg_id};
+    notice_t n = {.slot = -1, .message_id = event->msg_id,
+                  .arrived_us = esp_timer_get_time()};
     switch (id) {
     case MQTT_EVENT_CONNECTED:
         emqtt_receive_reset(&r->receiver);
@@ -273,13 +275,20 @@ bool emqtt_poll(emqtt_runtime_t *r, emqtt_event_t *out)
         memset(out, 0, sizeof(*out)); out->kind = EMQTT_EVENT_ERROR; out->error = EMQTT_ERROR_QUEUE;
         return true;
     }
-    if (r->state == EMQTT_SUBSCRIBING && esp_timer_get_time() >= r->subscription_deadline_us) {
+    notice_t n;
+    if (xQueueReceive(r->notices, &n, 0) != pdTRUE) {
+        if (r->state != EMQTT_SUBSCRIBING || esp_timer_get_time() < r->subscription_deadline_us)
+            return false;
         fail_closed(r);
         memset(out, 0, sizeof(*out)); out->kind = EMQTT_EVENT_ERROR; out->error = EMQTT_ERROR_SUBSCRIPTION;
         return true;
     }
-    notice_t n;
-    if (xQueueReceive(r->notices, &n, 0) != pdTRUE) return false;
+    /* 已入队的回执以到达时刻判定；逾期到达的任何事件不能延长等待。 */
+    if (r->state == EMQTT_SUBSCRIBING && n.arrived_us >= r->subscription_deadline_us) {
+        fail_closed(r);
+        memset(out, 0, sizeof(*out)); out->kind = EMQTT_EVENT_ERROR; out->error = EMQTT_ERROR_SUBSCRIPTION;
+        return true;
+    }
     memset(out, 0, sizeof(*out));
     out->kind = (emqtt_event_kind_t)n.kind;
     out->message_id = n.message_id; out->error = n.error; out->broker_code = n.broker_code; out->tls_flags = n.tls_flags;
