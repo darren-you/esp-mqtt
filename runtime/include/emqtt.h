@@ -13,6 +13,9 @@ typedef enum { EMQTT_ERROR_NONE, EMQTT_ERROR_TRANSPORT, EMQTT_ERROR_TLS,
 typedef enum { EMQTT_EVENT_CONNECTED, EMQTT_EVENT_READY, EMQTT_EVENT_DISCONNECTED,
                EMQTT_EVENT_MESSAGE, EMQTT_EVENT_PUBACK, EMQTT_EVENT_DELETED,
                EMQTT_EVENT_UNSUBSCRIBED, EMQTT_EVENT_ERROR } emqtt_event_kind_t;
+/* QoS1 入站重投会再次产生 MESSAGE，message.duplicate 保留协议 DUP 位；业务按自身操作 ID 幂等。
+ * PUBACK 仅表示 Broker 确认同一出站报文，重复 PUBACK 不产生第二个完成事件，
+ * 也不代表远端业务已执行。 */
 typedef struct {
     emqtt_event_kind_t kind;
     emqtt_error_t error;

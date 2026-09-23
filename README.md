@@ -43,4 +43,5 @@ ESP32-C3 构建须用 `sdk-lock.json` 的公开 ESP-IDF fork `855937cf9dcee13ee9
 - [来源归属与差异盘点](docs/design/source-provenance.md)
 - [P3-04 本机回归记录](docs/verification/p3-host-regression.md)
 - [订阅控制报文断线回归](docs/verification/mqtt-control-reconnect-linux.md)
+- [QoS1 ACK 与重投回归](docs/verification/mqtt-qos1-ack-linux.md)
 - [ESP Base、FRP、MQTT、OTA 与 Container 五仓开发计划](https://github.com/darren-you/darren-space/blob/master/harness/docs/design/darren-space/global/esp-base-frp-mqtt-ota-container-development-plan.md)
