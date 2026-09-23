@@ -170,6 +170,10 @@ int main(void)
     now_us += 10000001;
     emit(MQTT_EVENT_SUBSCRIBED, (esp_mqtt_event_t){.msg_id = 31, .data = &timely_grant, .data_len = 1});
     assert(emqtt_poll(r, &output) && output.error == EMQTT_ERROR_SUBSCRIPTION && !sdk.started);
+    /* 未获确认的动态新增不能成为下一轮的期望订阅。 */
+    assert(emqtt_start(r, true, true) == ESP_OK);
+    connect_ready(r);
+    assert(submitted_topic_count == 1 && !strcmp(submitted_topics[0].topic, "unit/in"));
     assert(emqtt_destroy(r) == ESP_OK);
     c = config();
     assert(emqtt_create(&c, &r) == ESP_OK);
@@ -199,10 +203,12 @@ int main(void)
     emit(MQTT_EVENT_PUBLISHED, (esp_mqtt_event_t){.msg_id = 41});
     assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_PUBACK);
     assert(emqtt_subscribe(r, "unit/extra", 0) == ESP_OK);
+    assert(emqtt_subscribe(r, "unit/extra", 0) == ESP_ERR_INVALID_STATE);
     assert(submitted_topic_count == 1 && !strcmp(submitted_topics[0].topic, "unit/extra") && submitted_topics[0].qos == 0);
     char grant_extra = 0;
     emit(MQTT_EVENT_SUBSCRIBED, (esp_mqtt_event_t){.msg_id = 31, .data = &grant_extra, .data_len = 1});
     assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_READY);
+    assert(emqtt_subscribe(r, "unit/extra", 0) == ESP_ERR_INVALID_ARG);
     /* 单项动态 SUBACK 与重新连接时的完整 SUBACK 是不同的证明。 */
     emit(MQTT_EVENT_DISCONNECTED, (esp_mqtt_event_t){0}); assert(emqtt_poll(r, &output));
     emit(MQTT_EVENT_CONNECTED, (esp_mqtt_event_t){0}); assert(emqtt_poll(r, &output));
@@ -211,11 +217,14 @@ int main(void)
     emit(MQTT_EVENT_SUBSCRIBED, (esp_mqtt_event_t){.msg_id = 31, .data = grants, .data_len = 2});
     assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_READY);
     assert(emqtt_unsubscribe(r, "unit/extra") == ESP_OK);
+    assert(emqtt_unsubscribe(r, "unit/extra") == ESP_ERR_INVALID_STATE);
     emit(MQTT_EVENT_UNSUBSCRIBED, (esp_mqtt_event_t){.msg_id = 32});
     assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_UNSUBSCRIBED);
+    assert(emqtt_unsubscribe(r, "unit/extra") == ESP_ERR_INVALID_ARG);
     emit(MQTT_EVENT_DISCONNECTED, (esp_mqtt_event_t){0});
     assert(emqtt_poll(r, &output) && emqtt_state(r) == EMQTT_DISCONNECTED);
     unsigned before = subscriptions; connect_ready(r); assert(subscriptions == before + 1);
+    assert(submitted_topic_count == 1 && !strcmp(submitted_topics[0].topic, "unit/in"));
     esp_mqtt_error_codes_t fault = {.error_type = MQTT_ERROR_TYPE_CONNECTION_REFUSED,
         .connect_return_code = MQTT_CONNECTION_REFUSE_NOT_AUTHORIZED};
     emit(MQTT_EVENT_ERROR, (esp_mqtt_event_t){.error_handle = &fault});
@@ -278,13 +287,41 @@ int main(void)
     emit(MQTT_EVENT_UNSUBSCRIBED, (esp_mqtt_event_t){.msg_id = -1});
     assert(emqtt_poll(r, &output) && output.error == EMQTT_ERROR_SUBSCRIPTION && !sdk.started);
     assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
+    /* 断线前未确认的新增不得进入重连时的期望列表。 */
+    assert(emqtt_subscribe(r, "unit/pending", 0) == ESP_OK);
+    assert(emqtt_subscribe(r, "unit/pending", 0) == ESP_ERR_INVALID_STATE);
+    emit(MQTT_EVENT_DISCONNECTED, (esp_mqtt_event_t){0});
+    assert(emqtt_poll(r, &output) && emqtt_state(r) == EMQTT_DISCONNECTED);
+    connect_ready(r);
+    assert(submitted_topic_count == 1 && !strcmp(submitted_topics[0].topic, "unit/in"));
+    /* Broker 明确拒绝的新增也不能在显式重启后偷偷成为 READY 的订阅。 */
+    assert(emqtt_subscribe(r, "unit/denied", 0) == ESP_OK);
+    char dynamic_denied = (char)0x80;
+    emit(MQTT_EVENT_SUBSCRIBED, (esp_mqtt_event_t){.msg_id = 31, .data = &dynamic_denied, .data_len = 1});
+    assert(emqtt_poll(r, &output) && output.error == EMQTT_ERROR_SUBSCRIPTION && !sdk.started);
+    assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
+    assert(submitted_topic_count == 1 && !strcmp(submitted_topics[0].topic, "unit/in"));
+    /* 断线前未确认的退订不能删除原有的已确认订阅。 */
+    assert(emqtt_unsubscribe(r, "unit/in") == ESP_OK);
+    assert(emqtt_unsubscribe(r, "unit/in") == ESP_ERR_INVALID_STATE);
+    emit(MQTT_EVENT_DISCONNECTED, (esp_mqtt_event_t){0});
+    assert(emqtt_poll(r, &output) && emqtt_state(r) == EMQTT_DISCONNECTED);
+    connect_ready(r);
+    assert(submitted_topic_count == 1 && !strcmp(submitted_topics[0].topic, "unit/in"));
+    /* 错误 UNSUBACK ID 后停止会话，重启仍恢复原订阅。 */
+    assert(emqtt_unsubscribe(r, "unit/in") == ESP_OK);
+    emit(MQTT_EVENT_UNSUBSCRIBED, (esp_mqtt_event_t){.msg_id = 33});
+    assert(emqtt_poll(r, &output) && output.error == EMQTT_ERROR_SUBSCRIPTION && !sdk.started);
+    assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
+    assert(submitted_topic_count == 1 && !strcmp(submitted_topics[0].topic, "unit/in"));
     assert(emqtt_unsubscribe(r, "unit/in") == ESP_OK);
     now_us += 10000001;
     emit(MQTT_EVENT_UNSUBSCRIBED, (esp_mqtt_event_t){.msg_id = 32});
     assert(emqtt_poll(r, &output) && output.error == EMQTT_ERROR_SUBSCRIPTION && !sdk.started);
+    /* 未获确认的动态退订不能让下一轮 READY 丢失原订阅。 */
     assert(emqtt_start(r, true, true) == ESP_OK);
-    emit(MQTT_EVENT_CONNECTED, (esp_mqtt_event_t){0});
-    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_READY);
+    connect_ready(r);
+    assert(submitted_topic_count == 1 && !strcmp(submitted_topics[0].topic, "unit/in"));
     fault = (esp_mqtt_error_codes_t){.error_type = MQTT_ERROR_TYPE_SUBSCRIBE_FAILED};
     emit(MQTT_EVENT_ERROR, (esp_mqtt_event_t){.error_handle = &fault});
     assert(emqtt_poll(r, &output) && output.error == EMQTT_ERROR_SUBSCRIPTION && !sdk.started);

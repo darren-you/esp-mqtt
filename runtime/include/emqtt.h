@@ -36,8 +36,9 @@ bool emqtt_poll(emqtt_runtime_t *runtime, emqtt_event_t *out);
 emqtt_state_t emqtt_state(const emqtt_runtime_t *runtime);
 esp_err_t emqtt_enqueue(emqtt_runtime_t *runtime, const char *topic,
                                 const void *payload, size_t length, uint8_t qos, bool retain, int *message_id);
-/* 动态新增只发送该 filter；重连提交全部期望订阅。提交失败停止会话，
- * start 是显式恢复入口；API 成功不代表 SUBACK/UNSUBACK 已确认。 */
+/* 动态新增只发送该 filter；仅在匹配的 SUBACK/UNSUBACK 获准后修改期望订阅。
+ * 回执失败、超时或断线保留原期望列表，重连重新提交该列表。
+ * 请求失败停止会话，start 是显式恢复入口；API 成功不代表回执已确认。 */
 esp_err_t emqtt_subscribe(emqtt_runtime_t *runtime, const char *filter, uint8_t qos);
 esp_err_t emqtt_unsubscribe(emqtt_runtime_t *runtime, const char *filter);
 /* 官方 outbox 的协议字节计数，不是完整 heap 占用或远端处理证明。 */

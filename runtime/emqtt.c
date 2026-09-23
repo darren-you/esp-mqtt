@@ -43,7 +43,9 @@ struct emqtt_runtime {
     bool faulted;
     emqtt_state_t state;
     int pending_subscribe, pending_unsubscribe;
-    size_t pending_subscribe_start, pending_subscribe_count;
+    size_t pending_subscribe_count, pending_unsubscribe_index;
+    emqtt_subscription_t pending_subscription;
+    bool pending_dynamic_subscribe;
     int64_t subscription_deadline_us;
 };
 static emqtt_runtime_t *s_instance;
@@ -59,6 +61,15 @@ static void post(emqtt_runtime_t *r, const notice_t *notice)
         if (notice->slot >= 0) { const int slot = notice->slot; (void)xQueueSend(r->free_slots, &slot, 0); }
         atomic_store(&r->overflow, true);
     }
+}
+
+static void clear_pending(emqtt_runtime_t *r)
+{
+    r->pending_subscribe = r->pending_unsubscribe = -1;
+    r->pending_subscribe_count = r->pending_unsubscribe_index = 0;
+    r->pending_dynamic_subscribe = false;
+    memset(&r->pending_subscription, 0, sizeof(r->pending_subscription));
+    r->subscription_deadline_us = 0;
 }
 
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -134,9 +145,7 @@ static void drain(emqtt_runtime_t *r)
     for (int i = 0; i < MESSAGE_SLOTS; ++i) (void)xQueueSend(r->free_slots, &i, 0);
     atomic_store(&r->overflow, false);
     emqtt_receive_reset(&r->receiver);
-    r->pending_subscribe = r->pending_unsubscribe = -1;
-    r->pending_subscribe_start = r->pending_subscribe_count = 0;
-    r->subscription_deadline_us = 0;
+    clear_pending(r);
     r->faulted = false;
 }
 
@@ -241,19 +250,20 @@ esp_err_t emqtt_destroy(emqtt_runtime_t *r)
     return ESP_OK;
 }
 
-static esp_err_t subscribe_selected(emqtt_runtime_t *r, size_t start, size_t count)
+static esp_err_t submit_subscriptions(emqtt_runtime_t *r, const emqtt_subscription_t *subscriptions,
+                                      size_t count, bool dynamic)
 {
     if (!count) { r->state = EMQTT_READY; return ESP_OK; }
     esp_mqtt_topic_t topics[EMQTT_SUBSCRIPTIONS_MAX];
     for (size_t i = 0; i < count; ++i) {
-        topics[i].filter = r->config.subscriptions[start + i].topic;
-        topics[i].qos = r->config.subscriptions[start + i].qos;
+        topics[i].filter = subscriptions[i].topic;
+        topics[i].qos = subscriptions[i].qos;
     }
     const int id = esp_mqtt_client_subscribe_multiple(r->client, topics, (int)count);
     if (id <= 0) { r->state = EMQTT_FAILED; return id == 0 ? ESP_FAIL : api_result(id); }
     r->pending_subscribe = id;
-    r->pending_subscribe_start = start;
     r->pending_subscribe_count = count;
+    r->pending_dynamic_subscribe = dynamic;
     r->subscription_deadline_us = esp_timer_get_time() + 10000000;
     r->state = EMQTT_SUBSCRIBING;
     return ESP_OK;
@@ -294,8 +304,8 @@ bool emqtt_poll(emqtt_runtime_t *r, emqtt_event_t *out)
     out->message_id = n.message_id; out->error = n.error; out->broker_code = n.broker_code; out->tls_flags = n.tls_flags;
     switch (n.kind) {
     case EMQTT_EVENT_CONNECTED:
-        r->pending_subscribe = r->pending_unsubscribe = -1;
-        if (subscribe_selected(r, 0, r->config.subscription_count) != ESP_OK) {
+        clear_pending(r);
+        if (submit_subscriptions(r, r->config.subscriptions, r->config.subscription_count, false) != ESP_OK) {
             fail_closed(r); out->kind = EMQTT_EVENT_ERROR; out->error = EMQTT_ERROR_SUBSCRIPTION;
         }
         else if (!r->config.subscription_count) out->kind = EMQTT_EVENT_READY;
@@ -304,21 +314,32 @@ bool emqtt_poll(emqtt_runtime_t *r, emqtt_event_t *out)
         if (r->pending_subscribe <= 0 || n.message_id != r->pending_subscribe || r->state != EMQTT_SUBSCRIBING ||
             n.error != EMQTT_ERROR_NONE ||
             !emqtt_suback_valid(n.suback, n.suback_count,
-                r->config.subscriptions + r->pending_subscribe_start, r->pending_subscribe_count)) {
+                r->pending_dynamic_subscribe ? &r->pending_subscription : r->config.subscriptions,
+                r->pending_subscribe_count)) {
             fail_closed(r); out->kind = EMQTT_EVENT_ERROR; out->error = EMQTT_ERROR_SUBSCRIPTION;
-        } else { r->state = EMQTT_READY; out->kind = EMQTT_EVENT_READY; }
-        r->pending_subscribe = -1;
-        r->pending_subscribe_start = r->pending_subscribe_count = 0;
-        r->subscription_deadline_us = 0;
+        } else {
+            if (r->pending_dynamic_subscribe)
+                r->config.subscriptions[r->config.subscription_count++] = r->pending_subscription;
+            r->state = EMQTT_READY; out->kind = EMQTT_EVENT_READY;
+        }
+        clear_pending(r);
         break;
     case EMQTT_EVENT_UNSUBSCRIBED:
         if (r->pending_unsubscribe <= 0 || n.message_id != r->pending_unsubscribe || r->state != EMQTT_SUBSCRIBING) {
             fail_closed(r); out->kind = EMQTT_EVENT_ERROR; out->error = EMQTT_ERROR_SUBSCRIPTION;
-        } else { r->pending_unsubscribe = -1; r->subscription_deadline_us = 0; r->state = EMQTT_READY; }
+        } else {
+            memmove(r->config.subscriptions + r->pending_unsubscribe_index,
+                    r->config.subscriptions + r->pending_unsubscribe_index + 1,
+                    (r->config.subscription_count - r->pending_unsubscribe_index - 1) * sizeof(r->config.subscriptions[0]));
+            --r->config.subscription_count;
+            r->state = EMQTT_READY;
+        }
+        clear_pending(r);
         break;
     case EMQTT_EVENT_DISCONNECTED:
-        r->state = EMQTT_DISCONNECTED; r->pending_subscribe = r->pending_unsubscribe = -1;
-        r->pending_subscribe_start = r->pending_subscribe_count = 0; r->subscription_deadline_us = 0; break;
+        clear_pending(r);
+        r->state = EMQTT_DISCONNECTED;
+        break;
     case EMQTT_EVENT_MESSAGE:
         out->message = r->messages[n.slot];
         (void)xQueueSend(r->free_slots, &n.slot, 0);
@@ -357,11 +378,11 @@ esp_err_t emqtt_subscribe(emqtt_runtime_t *r, const char *filter, uint8_t qos)
         r->config.subscription_count == EMQTT_SUBSCRIPTIONS_MAX) return ESP_ERR_INVALID_ARG;
     for (size_t i = 0; i < r->config.subscription_count; ++i)
         if (!strcmp(filter, r->config.subscriptions[i].topic)) return ESP_ERR_INVALID_ARG;
-    emqtt_subscription_t *sub = &r->config.subscriptions[r->config.subscription_count++];
+    emqtt_subscription_t *sub = &r->pending_subscription;
     strcpy(sub->topic, filter); sub->qos = qos;
     /* 只订阅新增项，避免重新订阅旧项触发无关 retained 消息再次交付。 */
-    const esp_err_t error = subscribe_selected(r, r->config.subscription_count - 1, 1);
-    if (error != ESP_OK) { --r->config.subscription_count; fail_closed(r); }
+    const esp_err_t error = submit_subscriptions(r, sub, 1, true);
+    if (error != ESP_OK) fail_closed(r);
     return error;
 }
 
@@ -374,10 +395,8 @@ esp_err_t emqtt_unsubscribe(emqtt_runtime_t *r, const char *filter)
     if (index == r->config.subscription_count) return ESP_ERR_INVALID_ARG;
     const int id = esp_mqtt_client_unsubscribe(r->client, filter);
     if (id <= 0) { fail_closed(r); return id == 0 ? ESP_FAIL : api_result(id); }
-    memmove(r->config.subscriptions + index, r->config.subscriptions + index + 1,
-            (r->config.subscription_count - index - 1) * sizeof(r->config.subscriptions[0]));
-    --r->config.subscription_count;
     r->pending_unsubscribe = id;
+    r->pending_unsubscribe_index = index;
     r->subscription_deadline_us = esp_timer_get_time() + 10000000;
     r->state = EMQTT_SUBSCRIBING;
     return ESP_OK;

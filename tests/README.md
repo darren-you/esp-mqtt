@@ -1,6 +1,6 @@
 # ESP MQTT 测试
 
-`host/run.sh` 以 C11、ASan、UBSan 编译本仓的通用运行源码和锁定上游头文件。fake 只注入 SDK API 返回、事件与队列，不实现官方 MQTT 编解码、Broker、TLS、FreeRTOS 并发或真实网络。上游原 `test/host` 保留为来源内容，当前未纳入本轮独立门禁。
+`host/run.sh` 以 C11、ASan、UBSan 编译本仓的通用运行源码和锁定上游头文件。fake 只注入 SDK API 返回、事件与队列，不实现官方 MQTT 编解码、Broker、TLS、FreeRTOS 并发或真实网络。动态订阅与退订的回执测试还核对：拒绝、超时、断线及错误 ID 后，重连只提交原期望列表；成功回执后才提交变更。上游原 `test/host` 保留为来源内容，当前未纳入本轮独立门禁。
 
 ## 架构拓扑
 
