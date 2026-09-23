@@ -13,7 +13,7 @@
 
 候选摘要按路径字典序遍历：固定文件 `mqtt_client.c`、`mqtt5_client.c`、`CMakeLists.txt`、`Kconfig`、`idf_component.yml`、`sdk-lock.json`，以及 `lib/`、`include/`、`runtime/`、`tests/host/`、`examples/broker-client/` 下扩展名为 `.c`、`.h`、`.txt`、`.json`、`.lock`、`.sh`、`.yml`、`.defaults` 的文件。对每个文件依次向 SHA-256 输入相对路径 UTF-8、NUL、原始文件字节、NUL。报告文件不参与摘要。
 
-`git diff --quiet HEAD -- mqtt_client.c mqtt5_client.c lib include` 返回 0：官方核心源码和头文件相对上述上游提交未改动。本次没有需要以 SDK fake 冒充的官方协议核心源码补丁。
+`git merge-base --is-ancestor 1a1e5788a5cf57a0f44a3c6c061407f6c9be1026 HEAD` 与 `git diff --quiet 1a1e5788a5cf57a0f44a3c6c061407f6c9be1026 HEAD -- mqtt_client.c mqtt5_client.c lib include` 均返回 0：官方核心源码和头文件相对固定上游提交未改动。本次没有需要以 SDK fake 冒充的官方协议核心源码补丁。
 
 ## 运行结果
 
