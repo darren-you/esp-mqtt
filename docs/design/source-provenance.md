@@ -10,7 +10,7 @@
 | ESP-IDF | `fff9895c82d744c7237be8847347bdd1b07c6643`，本轮核对的原 SDK 工作树干净 | 官方 SDK 基线 |
 | esp-lwip | `2758df4cd3666b3b2a5b53830148379326425c0d` | 独立拥有零窗口 ACK 修正；本仓不复制 lwIP 源 |
 
-本地 `tooling/esp-mqtt` 从固定官方提交完整克隆，`master` 指向该提交，保留截至此点的 1076 个上游提交、`v1.1.0` 标签与原 `LICENSE`。本轮只配置了现存官方 `upstream` URL；没有创建 `darren-you/esp-mqtt` 远端、提交或推送。上游 Git 测试子模块 `test/tools/paho.mqtt.testing` 尚未初始化，未进入本轮 host 构建。
+`tooling/esp-mqtt` 从固定官方提交完整克隆，保留截至该提交的 1076 个上游提交、`v1.1.0` 标签与原 `LICENSE`。第一方提交 `35de71ac9e978b65c2503dbdecb153a272274513` 已推送至公开 `darren-you/esp-mqtt` 的 `master`，官方仓库保留为 `upstream` 远端。上游 Git 测试子模块 `test/tools/paho.mqtt.testing` 尚未初始化，未进入本轮 host 构建。
 
 ## 实际源码差异与归属
 
@@ -37,5 +37,4 @@ Base 的 MQTT `sdkconfig.defaults` 要求 MQTT 3.1.1、严格 TLS、DELETED 通�
 
 - `tests/c3-smoke` 已在锁定 SDK 构建并链接通过，但只有空配置 API 调用；`examples/broker-client` 已提供独立网络样例并以非敏感合成输入完整链接，真实 Broker/证书/订阅与资源矩阵尚无新仓结果，P3b 未完成。
 - 官方核心源码相对 v1.1.0 未修改；新增运行层的 ASan/UBSan 结果与精确候选摘要见[P3-04 本机回归记录](../verification/p3-host-regression.md)。官方自带 host 测试尚未运行，不能将 SDK fake 结果表述为真实核心或网络协议回归。
-- 首个维护仓提交、公开远端、工作区 gitlink/catalog/AGENTS 生成登记均未执行；根仓不应指向只有上游旧提交的 gitlink 冒充本地改动已保存。
-- P3c 前 Base 仍使用官方 Registry 1.1.0 和原 `esp_base_mqtt_*`；不能把新仓 host 回归算作 Base 新组合验收。
+- 首个第一方提交、公开 `master` 和工作区 gitlink 已建立；Base 仍消费官方 Registry 1.1.0 与原 `esp_base_mqtt_*`，P3c 的精确源码消费、删除重复实现及同板验证尚未执行。
