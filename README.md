@@ -1,6 +1,6 @@
 # ESP MQTT
 
-`esp-mqtt` 是从官方 ESP-MQTT v1.1.0 固定提交 `1a1e5788a5cf57a0f44a3c6c061407f6c9be1026` 派生的独立 ESP-IDF `mqtt` 组件。官方 MQTT 编解码、QoS、重传和 outbox 保持原有源码与历史；本仓新增通用 `emqtt_` 运行接口，负责有界配置、订阅就绪、事件副本、分片重组与生命周期。上游许可为 Apache-2.0，来源和逐层差异见[来源归属与差异盘点](docs/design/source-provenance.md)。本仓已有公开 `darren-you/esp-mqtt` 的 `master` 与第一方提交；Base 消费切换和独立实板验收仍未完成。
+`esp-mqtt` 是从官方 ESP-MQTT v1.1.0 固定提交 `1a1e5788a5cf57a0f44a3c6c061407f6c9be1026` 派生的独立 ESP-IDF `mqtt` 组件。官方 MQTT 编解码、QoS、重传和 outbox 保持原有源码与历史；本仓新增通用 `emqtt_` 运行接口，负责有界配置、订阅就绪、事件副本、分片重组与生命周期。上游许可为 Apache-2.0，来源和逐层差异见[来源归属与差异盘点](docs/design/source-provenance.md)。Base 隔离实验应用已固定公开组件并删除原通用运行层；普通固件的设备命令接入与新组件的独立实板验收仍未完成。
 
 ## 架构拓扑
 
@@ -35,7 +35,7 @@ host 测试需要 C11 编译器，启用 ASan/UBSan；运行层测试直接包�
 
 ESP32-C3 构建须用 `sdk-lock.json` 的公开 ESP-IDF fork `855937cf9dcee13ee9c423fb0319238cdc8d53fd` 和 `esp-lwip` `2758df4cd3666b3b2a5b53830148379326425c0d`；fork 从官方 `fff9895c82d744c7237be8847347bdd1b07c6643` 派生，仅修复 `esp_ota_begin` 擦除失败后的句柄泄漏。[SDK 准备与检查](tools/README.md)只操作显式独立 checkout。组件 CMake 拒绝原始 lwIP、额外 SDK 修改或外部 lwIP 组件覆盖。调用方最终配置须启用 `CONFIG_MQTT_REPORT_DELETED_MESSAGES=y` 与 `CONFIG_MBEDTLS_HAVE_TIME_DATE=y`，且 MQTT 事件队列保持单项同步分发，确保官方 DATA 借用指针在回调内复制；普通固件禁止 `CONFIG_EMQTT_PLAINTEXT_LAB`，生产连接需要 CA、主机名和调用方建立的可信时间。[C3 编译检验](tests/c3-smoke/README.md)已在固定 SDK 下成功生成镜像，只核对组件/接口编译和链接。[独立 Broker 样例](examples/broker-client/README.md)提供 RAM Wi-Fi、SNTP、严格 TLS、固定测试 Topic 与生命周期命令；真实 Broker/C3 矩阵仍待执行。
 
-`idf_component.yml` 的 `0.1.0` 是第一方组件版本，区别于官方上游 v1.1.0；当前公开源码不等于已完成组件发行或设备验收。消费者须从公开维护仓固定完整提交，不能读取本工作区 checkout、`harness/external` 或 Base 的 `managed_components`；Base 的旧实现和官方 Registry 依赖要在 P3c 同批硬切后移除。工作区已登记本仓 gitlink，后续版本升级须与真实消费提交一致。
+`idf_component.yml` 的 `0.1.0` 是第一方组件版本，区别于官方上游 v1.1.0；当前公开源码不等于已完成组件发行或设备验收。消费者须从公开维护仓固定完整提交，不能读取本工作区 checkout、`harness/external` 或 Base 的 `managed_components`。`esp-base@a0eabdf` 已删除旧 `mqtt_runtime` 与 Registry 重复依赖，隔离实验应用直接消费本仓；普通固件仍未创建 MQTT 客户端或设备命令 ACK。工作区已登记本仓 gitlink，后续版本升级须与真实消费提交一致。
 
 - [运行层与测试](tests/README.md)
 - [来源归属与差异盘点](docs/design/source-provenance.md)

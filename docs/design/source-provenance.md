@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 官方 ESP-MQTT | `espressif/esp-mqtt` tag `v1.1.0`，`1a1e5788a5cf57a0f44a3c6c061407f6c9be1026` | `mqtt_client.c`、`include/`、`lib/`、`Kconfig`、官方示例和测试的上游历史；Apache-2.0 |
 | ESP Base 源 | `49df899e9f9f8fe6bc5eade1ea2814c02a498bfa` 工作树读取；本轮所读 MQTT 文件无未提交修改 | 设备内现有第一方适配、测试和实验应用的迁入来源 |
-| Base 锁定组件 | `firmware/dependencies.lock` 中 `espressif/mqtt` 1.1.0，component hash `fb18bc3b65aa8c94693a9811ffc322cca8a65d92d5ec84983d3e385080e3969c` | 当前 Base 构建仍消费 Registry 包，尚未切换 |
+| Base 当时锁定组件 | `firmware/dependencies.lock` 中 `espressif/mqtt` 1.1.0，component hash `fb18bc3b65aa8c94693a9811ffc322cca8a65d92d5ec84983d3e385080e3969c` | P3a 盘点时 Base 仍消费 Registry 包；后续切换见下文 |
 | ESP-IDF | `fff9895c82d744c7237be8847347bdd1b07c6643`，本轮核对的原 SDK 工作树干净 | 官方 SDK 基线 |
 | esp-lwip | `2758df4cd3666b3b2a5b53830148379326425c0d` | 独立拥有零窗口 ACK 修正；本仓不复制 lwIP 源 |
 
@@ -17,7 +17,7 @@
 | 读取范围 | 实测差异 | 裁决 |
 | --- | --- | --- |
 | Base `managed_components/espressif__mqtt` 与固定官方 v1.1.0 | `mqtt_client.c`、`mqtt5_client.c`、`include/*.h`、`lib` 的 C/头文件和组件 CMake/Kconfig 逐文件相同。差异只在 Registry 重新排序并补 `repository_info` 的 `idf_component.yml`、`.component_hash`/`CHECKSUMS.json` 等打包元数据、上游 Git/CI 元数据与测试子模块展开状态。 | 未发现当前实际编译的官方 MQTT 源码修正；不能把 Registry 打包差异称作协议补丁。新仓从官方源码直接维护，禁止编辑 Base 的生成目录。 |
-| Base `components/mqtt_runtime/esp_base_mqtt.c`，最晚来源提交 `88e68bc0cad140295ee068adecc9aa116bde175c` | 持有官方 client、深拷贝配置、单 owner、通知/消息队列、生命周期、事件分类、订阅/退订回执与 READY。 | 复制到 `runtime/emqtt.c`，只在新仓保留通用 `emqtt_` 接口；Base 原件待 P3c 同批删除。 |
+| Base `components/mqtt_runtime/esp_base_mqtt.c`，最晚来源提交 `88e68bc0cad140295ee068adecc9aa116bde175c` | 持有官方 client、深拷贝配置、单 owner、通知/消息队列、生命周期、事件分类、订阅/退订回执与 READY。 | 复制到 `runtime/emqtt.c`，只在新仓保留通用 `emqtt_` 接口；Base 原件已从 `a0eabdf` 删除。 |
 | Base `components/mqtt_runtime/mqtt_contract.c`，最晚来源提交 `c3d22c5be9c6f5943081fc1973d8475597135af8`；配套 `include/*.h` | Topic/过滤器、UTF-8、容量、分片重组、SUBACK 校验属通用合同；ClientID 必须 UUID v4 属 Base 身份策略。 | 复制到 `runtime/emqtt_contract.c` 和 `runtime/include/`；去掉 UUID 形状要求，改为调用方提供的非空、有效 UTF-8、最长 128 字节 ClientID。Base 后续继续装配持久 UUID。 |
 | Base `firmware/tests/mqtt_{contract,runtime}_test.c`，运行测试最晚来源提交 `88e68bc0cad140295ee068adecc9aa116bde175c` | SDK 回调/队列 fake 与第一方适配回归。 | 复制、改名并增强 ClientID 边界测试，放入 `tests/host/`；直接包含本仓官方 `mqtt_client.h`，不读 Base 或 `managed_components`。 |
 | Base `apps/mqtt_integration` | 仍依赖 Base identity、remote_config、已提交 Wi-Fi/NVS 与私有 Broker 输入。 | 尚未迁入；独立样例必须改用 RAM Wi-Fi、SNTP 和显式实验 ClientID/Topic/CA，不能复制 Base 的持久身份或 NVS 行为。 |
@@ -33,10 +33,12 @@
 
 当前构建锁已切至[公开 ESP-IDF fork](https://github.com/darren-you/esp-idf) `855937cf9dcee13ee9c423fb0319238cdc8d53fd`，父提交仍是上述官方 `fff9895...`；fork 仅修复 `esp_ota_begin` 擦除失败时的句柄泄漏。上段保留 P3a 当时的来源核对记录。当前 SDK 检查还核对 IDF 与 lwIP 的完整提交和唯一 lwIP gitlink 差异。
 
+`esp-base@f3c1e3d34a02d97a88494871f042a3398b2255bb` 已将隔离实验应用的精确 MQTT 依赖升至本仓 `9cac455b0184420353ff0283df3f100abaac3e6b`，并以同一 IDF/lwIP 版本对构建默认与实验 C3 工程；普通 Base 设备命令仍未启用 MQTT。
+
 Base 的 MQTT `sdkconfig.defaults` 要求 MQTT 3.1.1、严格 TLS、DELETED 通知和证书日期校验，接收/发送缓冲由运行层设为 1024/2304 字节，outbox 协议字节阈值为 16 KiB。新仓保留这些库侧守卫和配置参数；应用仍须显式装配最终 sdkconfig，库不修改全局 SDK 配置。Base 的设备 Topic、LWT 内容、命令 ACK、request_id 幂等、已提交身份/配置均留在 Base。
 
 ## 未闭合项
 
 - `tests/c3-smoke` 已在锁定 SDK 构建并链接通过，但只有空配置 API 调用；`examples/broker-client` 已提供独立网络样例并以非敏感合成输入完整链接，真实 Broker/证书/订阅与资源矩阵尚无新仓结果，P3b 未完成。
 - 官方核心源码相对 v1.1.0 未修改；新增运行层的 ASan/UBSan 结果与精确候选摘要见[P3-04 本机回归记录](../verification/p3-host-regression.md)。官方自带 host 测试尚未运行，不能将 SDK fake 结果表述为真实核心或网络协议回归。
-- 首个第一方提交、公开 `master` 和工作区 gitlink 已建立；Base 仍消费官方 Registry 1.1.0 与原 `esp_base_mqtt_*`，P3c 的精确源码消费、删除重复实现及同板验证尚未执行。
+- 首个第一方提交、公开 `master` 和工作区 gitlink 已建立。`esp-base@a0eabdf` 的隔离实验应用已固定本仓完整 SHA，并删除原 `esp_base_mqtt_*` 运行层、重复测试与官方 Registry 依赖；普通 Base 尚未创建 MQTT 客户端或设备命令 ACK，独立 Broker/C3 与同板切换也未验收。
