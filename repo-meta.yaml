@@ -1,0 +1,39 @@
+schema_version: 5
+name: esp-mqtt
+workspace_area: tooling
+archetype: tooling-repo
+lifecycle: incubating
+owner: darren-you
+governance_tier: standard
+domains:
+  - device-connectivity
+domain_roots:
+  device-connectivity:
+    - .
+delivery_surfaces:
+  - idf-component
+depends_on:
+  - esp-lwip
+default_workflows:
+  - test-idf-component
+doc_status:
+  architecture: present
+  api: present
+  release: missing
+github:
+  repo: darren-you/esp-mqtt
+  visibility: public
+  about: 基于官方 ESP-MQTT 固定源码的独立 ESP-IDF MQTT 组件与通用运行层
+  topics:
+    - darren-space
+    - tooling-repo
+    - device-connectivity
+    - mqtt
+    - idf-component
+entrypoints:
+  - README.md
+  - AGENTS.md
+  - tests/README.md
+  - tests/c3-smoke/README.md
+  - tools/README.md
+  - docs/design/source-provenance.md

@@ -37,6 +37,8 @@ build/
 sdkconfig
 sdkconfig.old
 dependencies.lock
+!tests/c3-smoke/dependencies.lock
+!examples/broker-client/dependencies.lock
 managed_components/
 
 # ESP-IDF build directories (but not source directories like build_test)

@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.16)
+if(NOT ESP_MQTT_COMPONENT_DIR)
+    message(FATAL_ERROR "Set ESP_MQTT_COMPONENT_DIR to this repository staged as mqtt")
+endif()
+set(EXTRA_COMPONENT_DIRS "${ESP_MQTT_COMPONENT_DIR}")
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(esp_mqtt_broker_client)

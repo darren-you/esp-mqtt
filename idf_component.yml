@@ -1,21 +1,12 @@
 name: mqtt
-version: 1.1.0
-description: >-
-  ESP-MQTT - A robust MQTT client library for ESP32 microcontrollers supporting
-  MQTT 3.1.1 and 5.0 protocols with multiple transport layers
-url: https://github.com/espressif/esp-mqtt
-documentation: >-
-  https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/protocols/mqtt.html
-repository: https://github.com/espressif/esp-mqtt
-issues: https://github.com/espressif/esp-mqtt/issues
+version: 0.1.0
+description: ESP-MQTT v1.1.0 upstream core with an independent bounded runtime
 license: Apache-2.0
 maintainers:
-  - Espressif Systems <support@espressif.com>
+  - darren-you
 tags:
   - mqtt
-  - mqtt5
-  - protocol
-  - networking
+  - esp-idf
 dependencies:
   idf:
-    version: '>=5.3'
+    version: '==6.1.0'

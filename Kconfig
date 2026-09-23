@@ -213,3 +213,12 @@ menu "ESP-MQTT Configurations"
             Note: This will allocate memory to store the topic only in case of message bigger than the buffer size.
 
 endmenu
+
+menu "ESP MQTT runtime"
+    config EMQTT_PLAINTEXT_LAB
+        bool "Allow plaintext MQTT in isolated experiments"
+        default n
+        help
+            Plaintext is only permitted for explicitly marked lab firmware.
+            Production firmware must leave this disabled.
+endmenu
