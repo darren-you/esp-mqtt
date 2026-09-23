@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.22)
+set(COMPONENTS main mqtt)
+if(NOT ESP_MQTT_COMPONENT_DIR)
+    message(FATAL_ERROR "Pass -D ESP_MQTT_COMPONENT_DIR=<isolated-output>/mqtt")
+endif()
+set(EXTRA_COMPONENT_DIRS ${ESP_MQTT_COMPONENT_DIR})
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(esp_mqtt_linux_broker_probe)

@@ -27,18 +27,20 @@
 
 官方原文件、版权和 Apache-2.0 标识继续由仓内上游历史与 `LICENSE` 保留。本地修改包括路径和前缀硬切、ClientID 责任剥离、组件 CMake/Kconfig/manifest，以及 host 测试入口。官方 MQTT5、QoS2、WS/WSS 源码作为原上游历史保留，首版 `emqtt_` 合同不声称覆盖这些能力。
 
+后续第一方修正直接落在官方来源文件 `mqtt_client.c`、`lib/mqtt_outbox.c` 与 `lib/include/mqtt_outbox.h`：clean session 断线时，在客户端 API 锁内且派发 `DISCONNECTED` 前删除 RAM outbox 中仍未确认的 SUBSCRIBE/UNSUBSCRIBE，保留 PUBLISH/PUBREL。原因是上游自动重连仍会重发旧订阅控制包，而 `emqtt_` 会在新连接按当前期望列表重新订阅；旧退订包如果随后重发，Broker 订阅集就可能与 READY 不一致。官方自定义 outbox 示例 `examples/custom_outbox/main/custom_outbox.cpp` 同步实现新增的分类删除合同，避免示例在链接时缺符号。改动保留原上游版权与许可，不通过消费者构建时补丁叠加；回归同时核对 outbox 分类删除与真实核心/隔离 Broker 的重连行为。
+
 ## IDF/lwIP 与配置结论
 
 本轮读取的原 ESP-IDF checkout 位于固定 `fff9895...`，`git status --short` 为空，内含原 lwIP `c6f2f878e7b0f86033214b85547d579be43351e3`；没有发现 IDF 本体其他源码差异。已准备的独立 SDK 同为固定 IDF 提交，唯一故意工作树差异是 `components/lwip/lwip` 指向公开修正 `2758df4...`。`tools/sdk.py check` 已对这份独立 SDK 通过，组件 CMake 要求同一 SDK 和内建 lwIP 组件路径。此结论只覆盖本轮两份具体 checkout 与 MQTT 相关输入，不声称所有机器的 SDK 都相同。
 
 当前构建锁已切至[公开 ESP-IDF fork](https://github.com/darren-you/esp-idf) `855937cf9dcee13ee9c423fb0319238cdc8d53fd`，父提交仍是上述官方 `fff9895...`；fork 仅修复 `esp_ota_begin` 擦除失败时的句柄泄漏。上段保留 P3a 当时的来源核对记录。当前 SDK 检查还核对 IDF 与 lwIP 的完整提交和唯一 lwIP gitlink 差异。
 
-`esp-base@f3c1e3d34a02d97a88494871f042a3398b2255bb` 已将隔离实验应用的精确 MQTT 依赖升至本仓 `9cac455b0184420353ff0283df3f100abaac3e6b`，并以同一 IDF/lwIP 版本对构建默认与实验 C3 工程；普通 Base 设备命令仍未启用 MQTT。
+`esp-base@f3c1e3d34a02d97a88494871f042a3398b2255bb` 已将隔离实验应用的精确 MQTT 依赖升至本仓 `9cac455b0184420353ff0283df3f100abaac3e6b`，并以同一 IDF/lwIP 版本对构建默认与实验 C3 工程。该提交当时尚未在普通固件启用 MQTT；后续 `esp-base@ecf1539` 已接入普通 MQTT owner 与设备命令。
 
 Base 的 MQTT `sdkconfig.defaults` 要求 MQTT 3.1.1、严格 TLS、DELETED 通知和证书日期校验，接收/发送缓冲由运行层设为 1024/2304 字节，outbox 协议字节阈值为 16 KiB。新仓保留这些库侧守卫和配置参数；应用仍须显式装配最终 sdkconfig，库不修改全局 SDK 配置。Base 的设备 Topic、LWT 内容、命令 ACK、request_id 幂等、已提交身份/配置均留在 Base。
 
 ## 未闭合项
 
-- `tests/c3-smoke` 已在锁定 SDK 构建并链接通过，但只有空配置 API 调用；`examples/broker-client` 已提供独立网络样例并以非敏感合成输入完整链接，真实 Broker/证书/订阅与资源矩阵尚无新仓结果，P3b 未完成。
-- 官方核心源码相对 v1.1.0 未修改；新增运行层的 ASan/UBSan 结果与精确候选摘要见[P3-04 本机回归记录](../verification/p3-host-regression.md)。官方自带 host 测试尚未运行，不能将 SDK fake 结果表述为真实核心或网络协议回归。
-- 首个第一方提交、公开 `master` 和工作区 gitlink 已建立。`esp-base@a0eabdf` 的隔离实验应用已固定本仓完整 SHA，并删除原 `esp_base_mqtt_*` 运行层、重复测试与官方 Registry 依赖；普通 Base 尚未创建 MQTT 客户端或设备命令 ACK，独立 Broker/C3 与同板切换也未验收。
+- `tests/c3-smoke` 已在锁定 SDK 构建并链接通过，但只有空配置 API 调用；`examples/broker-client` 已提供独立网络样例并以非敏感合成输入完整链接。[Linux 隔离 Broker 回归](../verification/mqtt-control-reconnect-linux.md)已用真实核心验证 clean session 的 SUB/UNSUB 与 QoS1 重传；C3 实板、TLS、真实 Broker/证书/订阅及资源矩阵仍无新仓结果，P3b 未完成。
+- [P3-04 本机回归记录](../verification/p3-host-regression.md)只证明该历史候选当时的官方核心源码未修改；上述后续断线修正已改变官方来源文件，须以当前提交的真实核心与隔离 Broker 回归单独验收。SDK fake 不能替代核心或网络协议回归。
+- 首个第一方提交、公开 `master` 和工作区 gitlink 已建立。`esp-base@a0eabdf` 的隔离实验应用已固定本仓完整 SHA，并删除原 `esp_base_mqtt_*` 运行层、重复测试与官方 Registry 依赖；`esp-base@ecf1539` 后普通固件已接入 MQTT owner 与设备命令。Linux 隔离 Broker 回归已有本仓结果，真实 Broker/设备 ACK、C3 实板与迁移仍待验收。

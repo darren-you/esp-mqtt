@@ -18,6 +18,9 @@
 #if defined(CONFIG_MQTT_EVENT_QUEUE_SIZE) && CONFIG_MQTT_EVENT_QUEUE_SIZE != 1
 #error "emqtt event copies require synchronous ESP-MQTT dispatch (event queue size 1)"
 #endif
+#if CONFIG_MQTT_DISABLE_API_LOCKS
+#error "emqtt requires ESP-MQTT API locks for SDK worker and owner operations"
+#endif
 
 #define NOTICE_CAPACITY 16
 #define MESSAGE_SLOTS 3

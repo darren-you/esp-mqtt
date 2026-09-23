@@ -144,6 +144,24 @@ esp_err_t outbox_delete(outbox_handle_t outbox, int msg_id, int msg_type)
     return ESP_FAIL;
 }
 
+int outbox_delete_message_type(outbox_handle_t outbox, int msg_type)
+{
+    int deleted = 0;
+    outbox_item_handle_t item, tmp;
+    STAILQ_FOREACH_SAFE(item, outbox->list, next, tmp) {
+        if ((0xFF & item->msg_type) == msg_type) {
+            STAILQ_REMOVE(outbox->list, item, outbox_item, next);
+            outbox->size -= item->len;
+            ESP_LOGD(TAG, "DELETE_TYPE msgid=%d, msg_type=%d, remain size=%"PRIu64,
+                     item->msg_id, msg_type, outbox_get_size(outbox));
+            free(item->buffer);
+            free(item);
+            ++deleted;
+        }
+    }
+    return deleted;
+}
+
 esp_err_t outbox_set_pending(outbox_handle_t outbox, int msg_id, pending_state_t pending)
 {
     outbox_item_handle_t item = outbox_get(outbox, msg_id);

@@ -852,10 +852,8 @@ static void mqtt_requeue_transmitted_messages(esp_mqtt_client_handle_t client)
     // inflight packets so the new connection admits and counts them once.
     //
     // [MQTT-4.4.0-1] only sanctions resending unacknowledged QoS>0 PUBLISH and
-    // PUBREL packets, so requeuing subscribe and unsubscribe is not correct.
-    // It is kept because it is what the client has always done: the periodic
-    // retransmit path resends any TRANSMITTED packet regardless of type, so
-    // dropping them here would silently break subscriptions that work today.
+    // PUBREL packets. Clean sessions drop old SUB/UNSUB packets on abort;
+    // persistent sessions retain the existing periodic retransmit behavior.
     while ((item = outbox_dequeue(client->outbox, TRANSMITTED, NULL)) != NULL) {
         size_t len;
         uint16_t msg_id;
@@ -998,6 +996,14 @@ static void esp_mqtt_abort_connection(esp_mqtt_client_handle_t client)
 {
     MQTT_API_LOCK(client);
     esp_transport_close(client->transport);
+    /* A clean session has no broker-side subscription state after reconnect.
+     * Let the application issue its current desired filters after CONNECTED;
+     * old unacknowledged SUB/UNSUB packets must not replay over that set.
+     * Keep QoS>0 PUBLISH/PUBREL in the RAM outbox for protocol retry. */
+    if (client->mqtt_state.connection.information.clean_session) {
+        outbox_delete_message_type(client->outbox, MQTT_MSG_TYPE_SUBSCRIBE);
+        outbox_delete_message_type(client->outbox, MQTT_MSG_TYPE_UNSUBSCRIBE);
+    }
     client->wait_timeout_ms = client->config->reconnect_timeout_ms;
     client->reconnect_tick = platform_tick_get_ms();
     client->state = MQTT_STATE_WAIT_RECONNECT;

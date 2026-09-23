@@ -212,6 +212,17 @@ struct outbox_t {
         });
     }
 
+    int erase_type(outbox_item::type_t msg_type)
+    {
+        return std::erase_if(queue, [this, msg_type](const outbox_item &item) {
+            if (item.get_type() != msg_type) {
+                return false;
+            }
+            total_size -= item.get_size();
+            return true;
+        });
+    }
+
     [[nodiscard]] auto size() const noexcept
     {
         return total_size;
@@ -338,6 +349,11 @@ esp_err_t outbox_delete_item(outbox_handle_t outbox, outbox_item_handle_t item_t
 esp_err_t outbox_delete(outbox_handle_t outbox, int msg_id, int msg_type)
 {
     return outbox->erase(outbox_item::id_t{msg_id}, outbox_item::type_t{msg_type});
+}
+
+int outbox_delete_message_type(outbox_handle_t outbox, int msg_type)
+{
+    return outbox->erase_type(outbox_item::type_t{msg_type});
 }
 
 int outbox_delete_single_expired(outbox_handle_t outbox, outbox_tick_t current_tick, outbox_tick_t timeout)

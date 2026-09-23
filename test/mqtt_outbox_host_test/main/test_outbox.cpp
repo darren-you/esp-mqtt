@@ -253,6 +253,36 @@ TEST_CASE("Outbox delete by msg_id and type")
     }
 }
 
+TEST_CASE("Clean-session disconnect drops control packets but keeps publish retry")
+{
+    OutboxGuard outbox;
+    auto subscribe_queued = make_msg(11, 1, 8, "sub-queued", 10);
+    auto subscribe_sent = make_msg(12, 1, 8, "sub-sent", 8);
+    auto unsubscribe_sent = make_msg(13, 1, 10, "unsub-sent", 10);
+    auto publish = make_msg(14, 1, 3, "publish", 7);
+    auto pubrel = make_msg(15, 2, 6, "pubrel", 6);
+    REQUIRE(outbox_enqueue(outbox.handle, &subscribe_queued, 0) != nullptr);
+    REQUIRE(outbox_enqueue(outbox.handle, &subscribe_sent, 0) != nullptr);
+    REQUIRE(outbox_enqueue(outbox.handle, &unsubscribe_sent, 0) != nullptr);
+    REQUIRE(outbox_enqueue(outbox.handle, &publish, 0) != nullptr);
+    REQUIRE(outbox_enqueue(outbox.handle, &pubrel, 0) != nullptr);
+    REQUIRE(outbox_set_pending(outbox.handle, 12, TRANSMITTED) == ESP_OK);
+    REQUIRE(outbox_set_pending(outbox.handle, 13, TRANSMITTED) == ESP_OK);
+    REQUIRE(outbox_set_pending(outbox.handle, 14, TRANSMITTED) == ESP_OK);
+    REQUIRE(outbox_set_pending(outbox.handle, 15, ACKNOWLEDGED) == ESP_OK);
+
+    REQUIRE(outbox_delete_message_type(outbox.handle, 8) == 2);
+    REQUIRE(outbox_delete_message_type(outbox.handle, 10) == 1);
+    REQUIRE(outbox_get(outbox.handle, 11) == nullptr);
+    REQUIRE(outbox_get(outbox.handle, 12) == nullptr);
+    REQUIRE(outbox_get(outbox.handle, 13) == nullptr);
+    REQUIRE(outbox_get(outbox.handle, 14) != nullptr);
+    REQUIRE(outbox_get(outbox.handle, 15) != nullptr);
+    REQUIRE(outbox_dequeue(outbox.handle, TRANSMITTED, nullptr) == outbox_get(outbox.handle, 14));
+    REQUIRE(outbox_dequeue(outbox.handle, ACKNOWLEDGED, nullptr) == outbox_get(outbox.handle, 15));
+    REQUIRE(outbox_get_size(outbox.handle) == 13);
+}
+
 TEST_CASE("Outbox delete by item handle")
 {
     OutboxGuard outbox;
