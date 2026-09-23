@@ -72,4 +72,4 @@ python3 examples/broker-client/serial_cycles.py \
   > /private/lab/esp-mqtt-cycles.csv
 ```
 
-错误认证、证书、订阅拒绝、4 KiB 超限和丢 ACK 分别需要相应实验 Broker/输入配置；不能用单次正常会话推断这些负例。真实设备写入仍须先满足上文的精确板卡、分区与两份一致完整 Flash 恢复基线，并取得本轮授权。当前这些实板步骤均未执行，不能把本机脚本或固定 SDK 编译记为 P3-06/P3-07 验收。
+错误认证、证书、订阅拒绝、4 KiB 超限和丢 ACK 分别需要相应实验 Broker/输入配置；不能用单次正常会话推断这些负例。真实设备写入仍须先满足上文的精确板卡、分区与两份一致完整 Flash 恢复基线，并取得本轮授权。当前这些实板步骤均未执行，不能把本机脚本或固定 SDK 编译记为 P3-06/P3-07 验收。本轮已验证的软件输入和缺口见 [P3 Broker 软件准备记录](../../docs/verification/p3-broker-preparation.md)。
