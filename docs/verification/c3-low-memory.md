@@ -8,7 +8,7 @@
 
 畸形片、连接重置和断线释放正在重组的临时缓冲；主动停止在 SDK 回调退出后清理在途缓冲。消息完成时先复制到释放出的固定槽，再释放临时缓冲；每次释放前按运行层现有的 volatile 字节写法擦除消息内容。通知队列发送失败时归还该槽。动态申请失败时运行层标记溢出，owner 下一次 `emqtt_poll` 停止会话并返回 `EMQTT_ERROR_QUEUE`。官方 MQTT 核心可能在回调前已向 Broker 发送 QoS 1 PUBACK，因此 OOM／溢出不能声称端到端交付可靠；C3 实板仍需测量这一峰值与实际 Broker 行为。
 
-`emqtt_receiver_t.message` 改为调用方提供的消息存储指针，重组期间不得复用。空指针直接拒绝。官方 MQTT 核心、outbox、QoS 1 ACK 和重发逻辑均未修改。
+`emqtt_receiver_t.message` 改为调用方提供的消息存储指针，重组期间不得复用。空指针直接拒绝。这次重组优化未修改官方 MQTT 核心、outbox、QoS 1 ACK 和重发逻辑；后续真实核心生命周期修正单独记录在 [transport OOM 回归](mqtt-lifecycle-transport-oom.md)。
 
 ## C3 字节账本
 
@@ -32,3 +32,5 @@
 | `tests/linux-broker/run.sh ... qos1-ack` | `BROKER TEST PASS` | 真实 MQTT 核心与本机 Broker：丢／重复 PUBACK、入站 DUP、断线重投；未使用 TLS 或 C3 实板 |
 
 本项只减少 MQTT 常态内存申请，三槽满时第四条在途期间没有净节省。FRP、OTA、Wi-Fi、Wasm 与 TLS 并行时的可用堆和最大连续块仍须在实际组合中测量；不能把上述常态节省当作完整五能力的容量证明。
+
+2026-09-24 的[生命周期与峰值复核](mqtt-lifecycle-transport-oom.md)确认运行实例仍为 21,144 B、官方核心句柄仍为 248 B；修复没有新增堆申请。三槽满时第四条在途的运行层申请峰值仍为 25,512 B，不能计作净节省。

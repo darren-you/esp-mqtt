@@ -129,7 +129,8 @@ struct esp_mqtt_client {
     int wait_timeout_ms;
     int auto_reconnect;
     esp_mqtt_event_t event;
-    bool run;
+    _Atomic bool run;
+    bool stopping;
     bool wait_for_ping_resp;
     outbox_handle_t outbox;
     EventGroupHandle_t status_bits;
