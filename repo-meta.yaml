@@ -21,7 +21,7 @@ doc_status:
   api: present
   release: missing
 github:
-  repo: darren-you/esp-mqtt
+  repo: esp-space/esp-mqtt
   visibility: public
   about: 基于官方 ESP-MQTT 固定源码的独立 ESP-IDF MQTT 组件与通用运行层
   topics:

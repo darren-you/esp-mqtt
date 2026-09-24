@@ -42,3 +42,5 @@ bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-qos1 qos1-ack
 当前运行层的命令、固定 SDK/源码候选摘要和结果见[P3-04 本机回归记录](../docs/verification/p3-host-regression.md)。
 
 [Broker 样例](../examples/broker-client/README.md)用于后续独立 C3 网络矩阵。构建仅证明装配和可执行路径存在；真实 TLS、Broker、资源回收与硬件结果必须单独记录。
+
+[Linux 生命周期回归](linux-lifecycle/README.md)使用真实核心与 FreeRTOS，覆盖立即停止、TCP/TLS 初始化和注册失败、同实例重启及并发停止；每项 100 次生命周期。定点故障只作用于测试调用点，不修改 SDK 或正式编译。
