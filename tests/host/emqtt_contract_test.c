@@ -52,7 +52,10 @@ int main(void)
     c.subscriptions[0].qos = 0;
     assert(!emqtt_suback_valid(accepted, 1, c.subscriptions, 1));
 
-    static emqtt_receiver_t receiver;
+    static emqtt_message_t message;
+    static emqtt_receiver_t receiver = {.message = &message};
+    emqtt_receiver_t missing_storage = {0};
+    assert(emqtt_receive(&missing_storage, NULL) == EMQTT_RX_REJECTED);
     uint8_t data[EMQTT_PAYLOAD_MAX];
     for (size_t i = 0; i < sizeof(data); ++i) data[i] = (uint8_t)i;
     emqtt_fragment_t f = {.topic = "unit/in", .topic_length = 7, .data = data,
@@ -63,11 +66,11 @@ int main(void)
         f.offset = (int)i; f.data = data + i; f.data_length = 1;
         assert(emqtt_receive(&receiver, &f) == (i + 1 == sizeof(data) ? EMQTT_RX_COMPLETE : EMQTT_RX_MORE));
     }
-    assert(receiver.message.length == sizeof(data) && receiver.message.retain && receiver.message.duplicate);
-    assert(!strcmp(receiver.message.topic, "unit/in") && !memcmp(receiver.message.payload, data, sizeof(data)));
+    assert(message.length == sizeof(data) && message.retain && message.duplicate);
+    assert(!strcmp(message.topic, "unit/in") && !memcmp(message.payload, data, sizeof(data)));
     f = (emqtt_fragment_t){.topic = "unit/in", .topic_length = 7};
     assert(emqtt_receive(&receiver, &f) == EMQTT_RX_COMPLETE);
-    assert(receiver.message.length == 0);
+    assert(message.length == 0);
     f.data = data; f.data_length = 3; f.total_length = 6;
     assert(emqtt_receive(&receiver, &f) == EMQTT_RX_MORE);
     f.topic = NULL; f.topic_length = 0; f.offset = 4;
@@ -82,7 +85,7 @@ int main(void)
         f.total_length = (int)((random >> 8) % 6000u) - 1000;
         f.data_length = (int)((random >> 16) % 4000u) - 1000;
         const emqtt_rx_result_t result = emqtt_receive(&receiver, &f);
-        if (result == EMQTT_RX_COMPLETE) assert(receiver.message.length <= EMQTT_PAYLOAD_MAX);
+        if (result == EMQTT_RX_COMPLETE) assert(message.length <= EMQTT_PAYLOAD_MAX);
     }
     puts("  mqtt_contract  passed");
     return 0;

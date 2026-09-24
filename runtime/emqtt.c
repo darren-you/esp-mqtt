@@ -40,6 +40,7 @@ struct emqtt_runtime {
     QueueHandle_t notices, free_slots;
     emqtt_config_t config;
     emqtt_receiver_t receiver;
+    int receiver_slot;
     emqtt_message_t messages[MESSAGE_SLOTS];
     atomic_bool overflow;
     bool started;
@@ -75,6 +76,16 @@ static void clear_pending(emqtt_runtime_t *r)
     r->subscription_deadline_us = 0;
 }
 
+static void release_receiver_slot(emqtt_runtime_t *r)
+{
+    const int slot = r->receiver_slot;
+    r->receiver_slot = -1;
+    emqtt_receive_reset(&r->receiver);
+    r->receiver.message = NULL;
+    if (slot >= 0 && xQueueSend(r->free_slots, &slot, 0) != pdTRUE)
+        atomic_store(&r->overflow, true);
+}
+
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)base;
@@ -84,11 +95,11 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
                   .arrived_us = esp_timer_get_time()};
     switch (id) {
     case MQTT_EVENT_CONNECTED:
-        emqtt_receive_reset(&r->receiver);
+        release_receiver_slot(r);
         n.kind = EMQTT_EVENT_CONNECTED;
         break;
     case MQTT_EVENT_DISCONNECTED:
-        emqtt_receive_reset(&r->receiver);
+        release_receiver_slot(r);
         n.kind = EMQTT_EVENT_DISCONNECTED;
         break;
     case MQTT_EVENT_SUBSCRIBED:
@@ -121,16 +132,27 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         }
         break;
     case MQTT_EVENT_DATA: {
+        if (r->receiver_slot < 0) {
+            if (xQueueReceive(r->free_slots, &r->receiver_slot, 0) != pdTRUE) {
+                atomic_store(&r->overflow, true);
+                return;
+            }
+            r->receiver.message = &r->messages[r->receiver_slot];
+        }
         const emqtt_fragment_t fragment = {.topic = event->topic, .topic_length = event->topic_len,
             .data = event->data, .data_length = event->data_len, .total_length = event->total_data_len,
             .offset = event->current_data_offset, .message_id = event->msg_id, .qos = event->qos,
             .retain = event->retain, .duplicate = event->dup};
         const emqtt_rx_result_t result = emqtt_receive(&r->receiver, &fragment);
         if (result == EMQTT_RX_MORE) return;
-        if (result == EMQTT_RX_REJECTED) { n.kind = EMQTT_EVENT_ERROR; n.error = EMQTT_ERROR_FRAGMENT; }
+        if (result == EMQTT_RX_REJECTED) {
+            release_receiver_slot(r);
+            n.kind = EMQTT_EVENT_ERROR; n.error = EMQTT_ERROR_FRAGMENT;
+        }
         else {
-            if (xQueueReceive(r->free_slots, &n.slot, 0) != pdTRUE) { atomic_store(&r->overflow, true); return; }
-            r->messages[n.slot] = r->receiver.message;
+            n.slot = r->receiver_slot;
+            r->receiver_slot = -1;
+            r->receiver.message = NULL;
             n.kind = EMQTT_EVENT_MESSAGE;
         }
         break;
@@ -143,11 +165,13 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 static void drain(emqtt_runtime_t *r)
 {
     /* 只在官方 stop 已等待回调退出，或尚未 start 时调用。 */
+    r->receiver_slot = -1;
+    emqtt_receive_reset(&r->receiver);
+    r->receiver.message = NULL;
     xQueueReset(r->notices);
     xQueueReset(r->free_slots);
     for (int i = 0; i < MESSAGE_SLOTS; ++i) (void)xQueueSend(r->free_slots, &i, 0);
     atomic_store(&r->overflow, false);
-    emqtt_receive_reset(&r->receiver);
     clear_pending(r);
     r->faulted = false;
 }

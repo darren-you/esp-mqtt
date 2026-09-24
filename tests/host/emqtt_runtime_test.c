@@ -197,6 +197,44 @@ int main(void)
     memset(bytes, 'X', sizeof(bytes));
     assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE);
     assert(output.message.length == 6 && !memcmp(output.message.payload, "abcdef", 6));
+    /* 首片预留的槽在断线时归还；同一运行实例可再次接收三个待处理消息。 */
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 11, .topic = "unit/in", .topic_len = 7,
+        .data = "a", .data_len = 1, .total_data_len = 2, .qos = 1});
+    emit(MQTT_EVENT_DISCONNECTED, (esp_mqtt_event_t){0});
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_DISCONNECTED);
+    connect_ready(r);
+    char queued[] = "abc";
+    for (int i = 0; i < 3; ++i)
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = i + 12, .topic = "unit/in", .topic_len = 7,
+            .data = &queued[i], .data_len = 1, .total_data_len = 1, .qos = 1});
+    memset(queued, 'X', sizeof queued);
+    for (int i = 0; i < 3; ++i) {
+        assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE);
+        assert(output.message.length == 1 && output.message.payload[0] == 'a' + i);
+    }
+    /* 畸形后续片归还正在重组的槽，后续完整消息仍可到达。 */
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 15, .topic = "unit/in", .topic_len = 7,
+        .data = "a", .data_len = 1, .total_data_len = 2, .qos = 1});
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 15, .data = "b", .data_len = 1,
+        .total_data_len = 2, .current_data_offset = 2, .qos = 1});
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_ERROR &&
+           output.error == EMQTT_ERROR_FRAGMENT);
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 16, .topic = "unit/in", .topic_len = 7,
+        .data = "z", .data_len = 1, .total_data_len = 1, .qos = 1});
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE &&
+           output.message.payload[0] == 'z');
+    /* 主动停止也必须回收未完成分片占用的槽。 */
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 17, .topic = "unit/in", .topic_len = 7,
+        .data = "a", .data_len = 1, .total_data_len = 2, .qos = 1});
+    assert(emqtt_stop(r) == ESP_OK);
+    assert(emqtt_start(r, true, true) == ESP_OK);
+    connect_ready(r);
+    for (int i = 0; i < 3; ++i)
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = i + 18, .topic = "unit/in", .topic_len = 7,
+            .data = "q", .data_len = 1, .total_data_len = 1, .qos = 1});
+    for (int i = 0; i < 3; ++i)
+        assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE &&
+               output.message.payload[0] == 'q');
     emit(MQTT_EVENT_DELETED, (esp_mqtt_event_t){.msg_id = 41});
     assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_DELETED && output.error == EMQTT_ERROR_EXPIRED);
     assert(emqtt_state(r) == EMQTT_READY);
