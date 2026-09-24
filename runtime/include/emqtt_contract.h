@@ -59,7 +59,8 @@ typedef struct {
 } emqtt_fragment_t;
 
 typedef struct {
-    emqtt_message_t message;
+    /* 调用方拥有消息存储；重组期间不得复用或释放。 */
+    emqtt_message_t *message;
     size_t received;
     bool active;
 } emqtt_receiver_t;
@@ -72,7 +73,7 @@ typedef enum {
 
 bool emqtt_topic_valid(const char *topic, size_t length, bool filter);
 bool emqtt_config_valid(const emqtt_config_t *config, bool allow_plaintext_lab);
-/* 完整数据归 receiver 所有，只在 COMPLETE 时可消费；下一片会复用缓冲区。 */
+/* 完整数据归调用方提供的 message 所有，只在 COMPLETE 时可消费。 */
 emqtt_rx_result_t emqtt_receive(emqtt_receiver_t *receiver, const emqtt_fragment_t *fragment);
 void emqtt_receive_reset(emqtt_receiver_t *receiver);
 /* 每个返回码必须与本次订阅逐项对应；任何拒绝、截断或额外项均失败。 */

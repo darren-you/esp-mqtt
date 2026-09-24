@@ -90,6 +90,8 @@ void emqtt_receive_reset(emqtt_receiver_t *receiver)
 emqtt_rx_result_t emqtt_receive(emqtt_receiver_t *r, const emqtt_fragment_t *f)
 {
     if (!r) return EMQTT_RX_REJECTED;
+    if (!r->message) goto reject;
+    emqtt_message_t *message = r->message;
     if (!f || f->topic_length < 0 || f->data_length < 0 || f->total_length < 0 || f->offset < 0 ||
         f->total_length > (int)EMQTT_PAYLOAD_MAX || f->offset > f->total_length ||
         f->data_length > f->total_length - f->offset || (f->data_length && !f->data) ||
@@ -97,24 +99,24 @@ emqtt_rx_result_t emqtt_receive(emqtt_receiver_t *r, const emqtt_fragment_t *f)
         (f->qos == 1 && f->message_id == 0) || (f->qos == 0 && f->message_id != 0)) goto reject;
     if (!r->active) {
         if (f->offset || !emqtt_topic_valid(f->topic, (size_t)f->topic_length, false)) goto reject;
-        memcpy(r->message.topic, f->topic, (size_t)f->topic_length);
-        r->message.topic[f->topic_length] = '\0';
-        r->message.length = (size_t)f->total_length;
-        r->message.message_id = f->message_id;
-        r->message.qos = (uint8_t)f->qos;
-        r->message.retain = f->retain;
-        r->message.duplicate = f->duplicate;
+        memcpy(message->topic, f->topic, (size_t)f->topic_length);
+        message->topic[f->topic_length] = '\0';
+        message->length = (size_t)f->total_length;
+        message->message_id = f->message_id;
+        message->qos = (uint8_t)f->qos;
+        message->retain = f->retain;
+        message->duplicate = f->duplicate;
         r->received = 0;
         r->active = true;
-    } else if (f->topic_length && (!f->topic || (size_t)f->topic_length != strlen(r->message.topic) ||
-               memcmp(f->topic, r->message.topic, (size_t)f->topic_length))) goto reject;
-    if ((size_t)f->offset != r->received || (size_t)f->total_length != r->message.length ||
-        f->message_id != r->message.message_id || f->qos != r->message.qos ||
-        f->retain != r->message.retain || f->duplicate != r->message.duplicate ||
+    } else if (f->topic_length && (!f->topic || (size_t)f->topic_length != strlen(message->topic) ||
+               memcmp(f->topic, message->topic, (size_t)f->topic_length))) goto reject;
+    if ((size_t)f->offset != r->received || (size_t)f->total_length != message->length ||
+        f->message_id != message->message_id || f->qos != message->qos ||
+        f->retain != message->retain || f->duplicate != message->duplicate ||
         (f->data_length == 0 && f->offset != 0)) goto reject;
-    if (f->data_length) memcpy(r->message.payload + r->received, f->data, (size_t)f->data_length);
+    if (f->data_length) memcpy(message->payload + r->received, f->data, (size_t)f->data_length);
     r->received += (size_t)f->data_length;
-    if (r->received == r->message.length) {
+    if (r->received == message->length) {
         r->active = false;
         return EMQTT_RX_COMPLETE;
     }
