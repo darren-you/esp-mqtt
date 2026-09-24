@@ -1,5 +1,5 @@
 name: mqtt
-version: 0.1.0
+version: 1.2.0
 description: ESP-MQTT v1.1.0 upstream core with an independent bounded runtime
 license: Apache-2.0
 maintainers:
