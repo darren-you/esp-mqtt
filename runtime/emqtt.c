@@ -59,6 +59,14 @@ static bool owned(const emqtt_runtime_t *r)
     return r && r == s_instance && r->owner == xTaskGetCurrentTaskHandle();
 }
 
+static void release_dynamic_message(emqtt_message_t *message)
+{
+    if (!message) return;
+    volatile unsigned char *bytes = (volatile unsigned char *)message;
+    for (size_t i = 0; i < sizeof(*message); ++i) bytes[i] = 0;
+    free(message);
+}
+
 static void post(emqtt_runtime_t *r, const notice_t *notice)
 {
     if (xQueueSend(r->notices, notice, 0) != pdTRUE) {
@@ -79,11 +87,13 @@ static void clear_pending(emqtt_runtime_t *r)
 static void release_receiver_slot(emqtt_runtime_t *r)
 {
     const int slot = r->receiver_slot;
+    emqtt_message_t *message = r->receiver.message;
     r->receiver_slot = -1;
     emqtt_receive_reset(&r->receiver);
     r->receiver.message = NULL;
     if (slot >= 0 && xQueueSend(r->free_slots, &slot, 0) != pdTRUE)
         atomic_store(&r->overflow, true);
+    if (slot < 0) release_dynamic_message(message);
 }
 
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -132,12 +142,17 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         }
         break;
     case MQTT_EVENT_DATA: {
-        if (r->receiver_slot < 0) {
+        if (!r->receiver.message) {
             if (xQueueReceive(r->free_slots, &r->receiver_slot, 0) != pdTRUE) {
-                atomic_store(&r->overflow, true);
-                return;
+                r->receiver_slot = -1;
+                r->receiver.message = calloc(1, sizeof(*r->receiver.message));
+                if (!r->receiver.message) {
+                    atomic_store(&r->overflow, true);
+                    return;
+                }
+            } else {
+                r->receiver.message = &r->messages[r->receiver_slot];
             }
-            r->receiver.message = &r->messages[r->receiver_slot];
         }
         const emqtt_fragment_t fragment = {.topic = event->topic, .topic_length = event->topic_len,
             .data = event->data, .data_length = event->data_len, .total_length = event->total_data_len,
@@ -150,7 +165,17 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
             n.kind = EMQTT_EVENT_ERROR; n.error = EMQTT_ERROR_FRAGMENT;
         }
         else {
-            n.slot = r->receiver_slot;
+            if (r->receiver_slot < 0) {
+                if (xQueueReceive(r->free_slots, &n.slot, 0) != pdTRUE) {
+                    release_receiver_slot(r);
+                    atomic_store(&r->overflow, true);
+                    return;
+                }
+                r->messages[n.slot] = *r->receiver.message;
+                release_dynamic_message(r->receiver.message);
+            } else {
+                n.slot = r->receiver_slot;
+            }
             r->receiver_slot = -1;
             r->receiver.message = NULL;
             n.kind = EMQTT_EVENT_MESSAGE;
@@ -165,9 +190,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 static void drain(emqtt_runtime_t *r)
 {
     /* 只在官方 stop 已等待回调退出，或尚未 start 时调用。 */
-    r->receiver_slot = -1;
-    emqtt_receive_reset(&r->receiver);
-    r->receiver.message = NULL;
+    release_receiver_slot(r);
     xQueueReset(r->notices);
     xQueueReset(r->free_slots);
     for (int i = 0; i < MESSAGE_SLOTS; ++i) (void)xQueueSend(r->free_slots, &i, 0);
@@ -195,6 +218,7 @@ esp_err_t emqtt_create(const emqtt_config_t *config, emqtt_runtime_t **out)
     r->config = *config;
     esp_err_t failure = ESP_ERR_NO_MEM;
     atomic_init(&r->overflow, false);
+    r->receiver_slot = -1;
     r->notices = xQueueCreate(NOTICE_CAPACITY, sizeof(notice_t));
     r->free_slots = xQueueCreate(MESSAGE_SLOTS, sizeof(int));
     if (!r->notices || !r->free_slots) goto fail;

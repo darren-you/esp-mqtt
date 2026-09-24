@@ -4,28 +4,31 @@
 
 ## 变更与所有权
 
-原运行实例同时拥有 `emqtt_receiver_t.message` 和三个 `emqtt_message_t` 事件槽。每条分片消息先写前者，完成后再复制到空闲槽。现在首片到达时从 `free_slots` 预留一个槽，后续片直接写该槽；完成后将槽号入通知队列，`emqtt_poll` 复制事件并归还槽。畸形片、连接重置和断线立即归还正在重组的槽；主动停止在 SDK 回调退出后重置全部槽。三条待处理消息仍可排队，第四条仍触发溢出并关闭会话。
+原运行实例同时拥有一个常驻重组消息和三个 `emqtt_message_t` 事件槽。每条分片消息先写常驻缓冲，完成后再复制到空闲槽。现在首片优先预留空闲槽并直接写入；三槽均被已完成消息占用时，最多临时分配一个 `emqtt_message_t` 给第四条在途消息。即使 owner 在第四条续片前消费并释放一个槽，第四条仍按原顺序完成和交付。临时缓冲从首片持有到完成或拒绝；完成时必须有空闲槽承接，否则按原有边界触发溢出并关闭会话。
+
+畸形片、连接重置和断线释放正在重组的临时缓冲；主动停止在 SDK 回调退出后清理在途缓冲。消息完成时先复制到释放出的固定槽，再释放临时缓冲；每次释放前按运行层现有的 volatile 字节写法擦除消息内容。通知队列发送失败时归还该槽。动态申请失败时运行层标记溢出，owner 下一次 `emqtt_poll` 停止会话并返回 `EMQTT_ERROR_QUEUE`。官方 MQTT 核心可能在回调前已向 Broker 发送 QoS 1 PUBACK，因此 OOM／溢出不能声称端到端交付可靠；C3 实板仍需测量这一峰值与实际 Broker 行为。
 
 `emqtt_receiver_t.message` 改为调用方提供的消息存储指针，重组期间不得复用。空指针直接拒绝。官方 MQTT 核心、outbox、QoS 1 ACK 和重发逻辑均未修改。
 
 ## C3 字节账本
 
-使用同一 ESP32-C3 `riscv32-esp-elf-gcc` 15.2.0，分别从改动前后源码编译 `runtime/emqtt.c`，从 DWARF 读取 `struct emqtt_runtime` 大小；头文件类型从同一工具链生成的 `.rodata` 常量读取。它们是 `emqtt_create` 单次 `calloc(sizeof(*r))` 请求的字节数，不含分配器元数据、FreeRTOS 队列、官方 MQTT 核心、outbox、TLS 和任务栈，也不是运行峰值。
+使用同一 ESP32-C3 `riscv32-esp-elf-gcc` 15.2.0，分别从改动前后源码编译 `runtime/emqtt.c`，从 DWARF 读取 `struct emqtt_runtime` 大小；头文件类型从同一工具链生成的 `.rodata` 常量读取。运行实例是 `emqtt_create` 的单次申请，临时消息仅在三槽满的在途期间申请。以下不含分配器元数据、FreeRTOS 队列、官方 MQTT 核心、outbox、TLS 和任务栈。
 
 | 类型或分配 | 改动前 | 改动后 | 差值 |
 | --- | ---: | ---: | ---: |
 | `emqtt_receiver_t` | 4,376 B | 12 B | −4,364 B |
 | `struct emqtt_runtime`／单次 `calloc` | 25,504 B | 21,144 B | **−4,360 B** |
 | 三个 `emqtt_message_t` 槽 | 13,104 B | 13,104 B | 0 B |
+| 三槽满时第四条临时消息 | 0 B | 最多 4,368 B | +4,368 B 峰值 |
 
-运行实例另增加一个 4 B 的在途槽号，故实际结构节省 4,360 B。`emqtt_message_t` 保持每个 4,368 B，`emqtt_config_t` 保持 7,716 B。
+运行实例增加的在途槽号落在原有对齐空隙内，故常态节省 4,360 B。三槽满且第四条仍在重组时，多申请 4,368 B；与旧实现相比，此时申请字节数增加 8 B，另有分配器元数据。`emqtt_message_t` 每个仍为 4,368 B，`emqtt_config_t` 仍为 7,716 B；通知队列元素仍为 48 B。FreeRTOS 队列头、分配器元数据和碎片未计入。
 
 ## 本机验证
 
 | 检查 | 结果 | 边界 |
 | --- | --- | --- |
-| `bash tests/host/run.sh` | 通过，ASan／UBSan | 分片、三个并列待处理消息、断线与主动停止的在途槽归还、畸形片、第四条溢出、100 次生命周期 |
+| `bash tests/host/run.sh` | 通过，ASan／UBSan | 三队列→第四首片→owner 消费→续片、断线／停止／畸形片／通知队列失败清理、动态 OOM、第四条完成仍无槽时溢出、100 次生命周期 |
 | 固定 SDK 的 `tests/c3-smoke/build.sh` | ESP32-C3 编译链接通过，镜像 `0x24d80` B | 空配置 smoke，不建立 Wi-Fi／MQTT／TLS 会话 |
 | `tests/linux-broker/run.sh ... qos1-ack` | `BROKER TEST PASS` | 真实 MQTT 核心与本机 Broker：丢／重复 PUBACK、入站 DUP、断线重投；未使用 TLS 或 C3 实板 |
 
-本项只减少 MQTT 运行实例的一次常驻申请。FRP、OTA、Wi-Fi、Wasm 与 TLS 并行时的可用堆和最大连续块仍须在实际组合中测量；不能把上述 4,360 B 当作完整五能力的容量证明。
+本项只减少 MQTT 常态内存申请，三槽满时第四条在途期间没有净节省。FRP、OTA、Wi-Fi、Wasm 与 TLS 并行时的可用堆和最大连续块仍须在实际组合中测量；不能把上述常态节省当作完整五能力的容量证明。
