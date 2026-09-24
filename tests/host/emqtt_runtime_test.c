@@ -11,6 +11,31 @@
 
 struct fake_queue { unsigned length, item_size, head, count; unsigned char data[]; };
 static unsigned live_queues, queue_attempt, fail_queue_attempt;
+static void *dynamic_allocation;
+static unsigned dynamic_attempts, dynamic_allocations, dynamic_frees;
+static bool fail_next_dynamic;
+void *emqtt_test_calloc(size_t count, size_t size)
+{
+    if (count == 1 && size == sizeof(emqtt_message_t)) {
+        ++dynamic_attempts;
+        if (fail_next_dynamic) { fail_next_dynamic = false; return NULL; }
+        assert(!dynamic_allocation);
+        dynamic_allocation = calloc(count, size);
+        if (dynamic_allocation) ++dynamic_allocations;
+        return dynamic_allocation;
+    }
+    return calloc(count, size);
+}
+void emqtt_test_free(void *pointer)
+{
+    if (pointer == dynamic_allocation && pointer) {
+        const unsigned char *bytes = pointer;
+        for (size_t i = 0; i < sizeof(emqtt_message_t); ++i) assert(bytes[i] == 0);
+        dynamic_allocation = NULL;
+        ++dynamic_frees;
+    }
+    free(pointer);
+}
 QueueHandle_t xQueueCreate(UBaseType_t length, UBaseType_t item_size)
 {
     if (++queue_attempt == fail_queue_attempt) return NULL;
@@ -207,11 +232,22 @@ int main(void)
     for (int i = 0; i < 3; ++i)
         emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = i + 12, .topic = "unit/in", .topic_len = 7,
             .data = &queued[i], .data_len = 1, .total_data_len = 1, .qos = 1});
+    /* 三槽排队后第 4 条开始分片；owner 先消费一槽，余下片仍须交付。 */
+    const unsigned allocations_before = dynamic_attempts;
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 15, .topic = "unit/in", .topic_len = 7,
+        .data = "d", .data_len = 1, .total_data_len = 2, .qos = 1});
+    assert(dynamic_attempts == allocations_before + 1 && dynamic_allocation);
     memset(queued, 'X', sizeof queued);
-    for (int i = 0; i < 3; ++i) {
-        assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE);
-        assert(output.message.length == 1 && output.message.payload[0] == 'a' + i);
-    }
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE &&
+           output.message.length == 1 && output.message.payload[0] == 'a');
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 15, .data = "e", .data_len = 1,
+        .total_data_len = 2, .current_data_offset = 1, .qos = 1});
+    for (int i = 0; i < 2; ++i)
+        assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE &&
+               output.message.length == 1 && output.message.payload[0] == 'b' + i);
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE &&
+           output.message.length == 2 && !memcmp(output.message.payload, "de", 2));
+    assert(!dynamic_allocation);
     /* 畸形后续片归还正在重组的槽，后续完整消息仍可到达。 */
     emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 15, .topic = "unit/in", .topic_len = 7,
         .data = "a", .data_len = 1, .total_data_len = 2, .qos = 1});
@@ -287,9 +323,98 @@ int main(void)
     now_us += 10000001;
     assert(emqtt_poll(r, &output) && output.error == EMQTT_ERROR_SUBSCRIPTION && !sdk.started);
     assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
-    for (int i = 0; i < 4; ++i) emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.topic = "unit/in", .topic_len = 7});
+    /* 动态缓冲上的畸形续片必须释放；既有三条消息仍按顺序交付。 */
+    for (int i = 0; i < 3; ++i)
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 50 + i, .topic = "unit/in", .topic_len = 7,
+            .data = "q", .data_len = 1, .total_data_len = 1, .qos = 1});
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 53, .topic = "unit/in", .topic_len = 7,
+        .data = "a", .data_len = 1, .total_data_len = 2, .qos = 1});
+    assert(dynamic_allocation);
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 53, .data = "b", .data_len = 1,
+        .total_data_len = 2, .current_data_offset = 2, .qos = 1});
+    assert(!dynamic_allocation);
+    for (int i = 0; i < 3; ++i)
+        assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE);
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_ERROR && output.error == EMQTT_ERROR_FRAGMENT);
+    /* 断线、停止和已入通知队列后停止都不能遗留临时缓冲。 */
+    for (int i = 0; i < 3; ++i)
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 54 + i, .topic = "unit/in", .topic_len = 7,
+            .data = "q", .data_len = 1, .total_data_len = 1, .qos = 1});
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 57, .topic = "unit/in", .topic_len = 7,
+        .data = "a", .data_len = 1, .total_data_len = 2, .qos = 1});
+    assert(dynamic_allocation);
+    emit(MQTT_EVENT_DISCONNECTED, (esp_mqtt_event_t){0});
+    assert(!dynamic_allocation);
+    for (int i = 0; i < 3; ++i)
+        assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE);
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_DISCONNECTED);
+    connect_ready(r);
+    for (int i = 0; i < 3; ++i)
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 58 + i, .topic = "unit/in", .topic_len = 7,
+            .data = "q", .data_len = 1, .total_data_len = 1, .qos = 1});
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 61, .topic = "unit/in", .topic_len = 7,
+        .data = "a", .data_len = 1, .total_data_len = 2, .qos = 1});
+    assert(dynamic_allocation && emqtt_stop(r) == ESP_OK && !dynamic_allocation);
+    assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
+    for (int i = 0; i < 3; ++i)
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 62 + i, .topic = "unit/in", .topic_len = 7,
+            .data = "q", .data_len = 1, .total_data_len = 1, .qos = 1});
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 65, .topic = "unit/in", .topic_len = 7,
+        .data = "a", .data_len = 1, .total_data_len = 2, .qos = 1});
+    assert(dynamic_allocation);
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE);
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 65, .data = "b", .data_len = 1,
+        .total_data_len = 2, .current_data_offset = 1, .qos = 1});
+    assert(!dynamic_allocation && emqtt_stop(r) == ESP_OK);
+    assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
+    /* 第 4 条完成前 owner 已释放槽，但通知队列已满：归还槽并 fail closed。 */
+    for (int i = 0; i < 3; ++i)
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 66 + i, .topic = "unit/in", .topic_len = 7,
+            .data = "q", .data_len = 1, .total_data_len = 1, .qos = 1});
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 69, .topic = "unit/in", .topic_len = 7,
+        .data = "a", .data_len = 1, .total_data_len = 2, .qos = 1});
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE);
+    for (int i = 0; i < 14; ++i)
+        emit(MQTT_EVENT_PUBLISHED, (esp_mqtt_event_t){.msg_id = 70 + i});
+    assert(dynamic_allocation);
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 69, .data = "b", .data_len = 1,
+        .total_data_len = 2, .current_data_offset = 1, .qos = 1});
+    assert(!dynamic_allocation);
     assert(emqtt_poll(r, &output) && output.error == EMQTT_ERROR_QUEUE && !sdk.started);
+    assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
+    /* 临时申请 OOM 时本地 fail closed；官方核心可能已先发 PUBACK。 */
+    for (int i = 0; i < 3; ++i)
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 83 + i, .topic = "unit/in", .topic_len = 7,
+            .data = "q", .data_len = 1, .total_data_len = 1, .qos = 1});
+    fail_next_dynamic = true;
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 86, .topic = "unit/in", .topic_len = 7,
+        .data = "a", .data_len = 1, .total_data_len = 2, .qos = 1});
+    assert(!fail_next_dynamic && !dynamic_allocation);
+    assert(emqtt_poll(r, &output) && output.error == EMQTT_ERROR_QUEUE && !sdk.started);
+    assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
+    /* 第 4 条完成时无槽可转存，保持原有 fail-closed 上限。 */
+    for (int i = 0; i < 4; ++i)
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.topic = "unit/in", .topic_len = 7});
+    assert(emqtt_poll(r, &output) && output.error == EMQTT_ERROR_QUEUE && !sdk.started);
+    assert(!dynamic_allocation);
     assert(!emqtt_poll(r, &output));
+    assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
+    /* 第四条在订阅期限后完成时，仍使用原有到达时刻判定。 */
+    assert(emqtt_subscribe(r, "unit/late-dynamic", 0) == ESP_OK);
+    for (int i = 0; i < 3; ++i)
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 87 + i, .topic = "unit/in", .topic_len = 7,
+            .data = "q", .data_len = 1, .total_data_len = 1, .qos = 1});
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 90, .topic = "unit/in", .topic_len = 7,
+        .data = "a", .data_len = 1, .total_data_len = 2, .qos = 1});
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE);
+    now_us += 10000001;
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 90, .data = "b", .data_len = 1,
+        .total_data_len = 2, .current_data_offset = 1, .qos = 1});
+    assert(!dynamic_allocation);
+    for (int i = 0; i < 2; ++i)
+        assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE);
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_ERROR &&
+           output.error == EMQTT_ERROR_SUBSCRIPTION && !sdk.started && !dynamic_allocation);
     assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
     for (int i = 0; i < 17; ++i) emit(MQTT_EVENT_PUBLISHED, (esp_mqtt_event_t){.msg_id = i + 1});
     assert(emqtt_poll(r, &output) && output.error == EMQTT_ERROR_QUEUE && !sdk.started);
@@ -372,6 +497,7 @@ int main(void)
         assert(emqtt_destroy(r) == ESP_OK && !live_client && !live_queues);
     }
     assert(stop_calls > 200 && enqueues == 3);
+    assert(!dynamic_allocation && dynamic_allocations == dynamic_frees);
     puts("  mqtt_runtime   passed (SDK event injection; not Broker/hardware acceptance)");
     return 0;
 }

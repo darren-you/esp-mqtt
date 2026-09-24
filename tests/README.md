@@ -1,6 +1,6 @@
 # ESP MQTT 测试
 
-`host/run.sh` 以 C11、ASan、UBSan 编译本仓的通用运行源码和锁定上游头文件。fake 只注入 SDK API 返回、事件与队列，不实现官方 MQTT 编解码、Broker、TLS、FreeRTOS 并发或真实网络。动态订阅与退订的回执测试还核对：拒绝、超时、断线及错误 ID 后，重连只提交原期望列表；成功回执后才提交变更。入站测试另核对首片预留槽、三个待处理消息、畸形片与断线／停止时的在途槽归还，以及第四条消息溢出后的 fail-closed。上游原 `test/host` 保留为来源内容，当前未纳入本轮独立门禁。
+`host/run.sh` 以 C11、ASan、UBSan 编译本仓的通用运行源码和锁定上游头文件。fake 只注入 SDK API 返回、事件与队列，不实现官方 MQTT 编解码、Broker、TLS、FreeRTOS 并发或真实网络。动态订阅与退订的回执测试还核对：拒绝、超时、断线及错误 ID 后，重连只提交原期望列表；成功回执后才提交变更。入站测试另核对首片预留槽、三个待处理消息、第四条临时缓冲在 owner 释放槽后的续片交付、畸形片／断线／停止／通知队列失败的缓冲清理、临时申请 OOM，以及第四条完成时仍无空槽的 fail-closed。上游原 `test/host` 保留为来源内容，当前未纳入本轮独立门禁。
 
 `test/mqtt_outbox_host_test` 则在 IDF Linux host target 直接编译本仓真实 `lib/mqtt_outbox.c`。新增定向用例核对 clean session 断线需删除的已排队/已发送 SUBSCRIBE、UNSUBSCRIBE，及应保留的 QoS1 PUBLISH、PUBREL；该测试不能证明实际断线入口已调用清理函数，也不能证明 Broker 订阅集。
 
