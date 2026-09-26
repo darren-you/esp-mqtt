@@ -45,4 +45,5 @@ ESP32-C3 与 ESP32-D0WD-V3 分别以 IDF target `esp32c3`、`esp32` 构建，均
 - [订阅控制报文断线回归](docs/verification/mqtt-control-reconnect-linux.md)
 - [QoS1 ACK 与重投回归](docs/verification/mqtt-qos1-ack-linux.md)
 - [真实核心生命周期与 transport OOM 回归](docs/verification/mqtt-lifecycle-transport-oom.md)
+- [真实核心 Linux TLS 与证书拒绝回归](docs/verification/mqtt-tls-linux.md)
 - [ESP Base、FRP、MQTT、OTA 与 Container 五仓开发计划](https://github.com/darren-you/darren-space/blob/master/harness/docs/design/darren-space/global/esp-base-frp-mqtt-ota-container-development-plan.md)

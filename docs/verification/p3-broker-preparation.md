@@ -50,3 +50,5 @@ bash examples/broker-client/build.sh /Users/darrenyou/.cache/darren-space/esp-mq
 | `esp32` | UART0/115200；4 MiB；上述三份源码均在 `compile_commands.json` | 899920 B | `ead92c75358adcc527a681d72bb204b1bf0c4579df3b6312edc535be83bb819a` |
 
 两份最终 `sdkconfig` 都启用 `MQTT_REPORT_DELETED_MESSAGES` 与 `MBEDTLS_HAVE_TIME_DATE`，禁用 PHY 校准 NVS 存储和实验明文开关；`esp32` 没有 USB Serial/JTAG 或第二控制台配置项。本机 host ASan/UBSan 运行层测试、SDK 工具 8 项及串口驱动伪端口 3 项通过；`build.sh` 语法与 Git diff 检查通过。P1-04 已在两板建立私有恢复基线，但本次构建没有连接 Broker、串口或设备，也没有刷写。候选须保存为公开精确提交并在两台真实设备分别完成第 7.4 节矩阵后，才能关闭 P3-06/P3-07；C3 低内存分支的运行层改动还须与本轮样例改动合并并重新验证对应制品。
+
+同日新增的[真实核心 Linux TLS 回归](mqtt-tls-linux.md)在关闭明文实验开关后，验证本机一次性证书的正确 CA/主机名可完成 SUBACK 和 QoS1 PUBACK，错误 CA/主机名均在 MQTT CONNECT 前被拒绝。该软件回环不改变本节两板实测缺口，也不把测试 CA 带入样例固件。

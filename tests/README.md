@@ -32,9 +32,10 @@ flowchart LR
 bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-full full
 bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-unsub unsub-only
 bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-qos1 qos1-ack
+bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-tls tls
 ```
 
-输出目录放在仓外，每个场景使用独立目录。脚本通过组件 CMake 执行固定 SDK/lwIP 检查；`full` 与 `unsub-only` 核对新 clean session 的 Broker 订阅集、旧 SUB/UNSUB 不重放，以及混合 QoS1 PUBLISH 的 `DUP=1` 重发与 PUBACK。`qos1-ack` 独立核对同一连接丢 PUBACK 后按原 ID、原载荷和 `DUP=1` 重发，重复 PUBACK 只产生一次完成事件；还核对入站 QoS1 重投两次交付、两次回 PUBACK、断线后重发以及最终 outbox 清空。本机 Linux Broker 回归不代表 ESP32-C3 实板、TLS 或生产网络验收。
+输出目录放在仓外，每个场景使用独立目录。脚本通过组件 CMake 执行固定 SDK/lwIP 检查；`full` 与 `unsub-only` 核对新 clean session 的 Broker 订阅集、旧 SUB/UNSUB 不重放，以及混合 QoS1 PUBLISH 的 `DUP=1` 重发与 PUBACK。`qos1-ack` 独立核对同一连接丢 PUBACK 后按原 ID、原载荷和 `DUP=1` 重发，重复 PUBACK 只产生一次完成事件；还核对入站 QoS1 重投两次交付、两次回 PUBACK、断线后重发以及最终 outbox 清空。`tls` 关闭明文实验开关，在仅本机回环的临时 TLS Broker 上运行真实核心：正确 CA 与主机名完成 SUBACK/QoS1 PUBACK，错误 CA 与主机名均拒绝，可信时间未就绪时不启动。测试证书与密钥只在权限受限的仓外临时目录生成并在退出时删除。Linux 结果不代表两台 ESP 实板、实验 Wi-Fi、生产 Broker 或 P3-07 验收；详见 [TLS 回归记录](../docs/verification/mqtt-tls-linux.md)。
 
 新版通过和旧版复现的精确对照见[订阅控制报文断线回归](../docs/verification/mqtt-control-reconnect-linux.md)。
 [QoS1 ACK 与重投回归](../docs/verification/mqtt-qos1-ack-linux.md)记录独立真实核心场景及事件语义。
