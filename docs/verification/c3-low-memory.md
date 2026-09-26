@@ -34,3 +34,11 @@
 本项只减少 MQTT 常态内存申请，三槽满时第四条在途期间没有净节省。FRP、OTA、Wi-Fi、Wasm 与 TLS 并行时的可用堆和最大连续块仍须在实际组合中测量；不能把上述常态节省当作完整五能力的容量证明。
 
 2026-09-24 的[生命周期与峰值复核](mqtt-lifecycle-transport-oom.md)确认运行实例仍为 21,144 B、官方核心句柄仍为 248 B；修复没有新增堆申请。三槽满时第四条在途的运行层申请峰值仍为 25,512 B，不能计作净节省。
+
+## 2026-09-26 与双目标样例收敛
+
+从本仓 `master@84ad972d94850cdfd9b6cba606d3af7a56fab22a` 在隔离工作树创建 `codex/mqtt-c3-reconcile`，依次接入 C3 分支 `547e26c`、`ccf81df`、`18e2395` 的运行层和官方核心生命周期修正；仅 `commit-message.txt` 出现文本冲突，按 C3 修正内容解决，运行源码没有冲突。再将本轮主线的 C3 原生 USB／ESP32 UART0 独立 Broker 样例变更接入同一候选。SDK 与 lwIP 锁沿用当前主线，不恢复旧分支的锁文件。
+
+隔离工作树的 `bash tests/host/run.sh` 在 ASan／UBSan 下通过；工具 unittest 8/8、串口驱动伪终端 3/3 通过。把同一源码复制到 mac-work-1 的仓外目录，`tools/sdk.py check` 确认 ESP-IDF `578cf89c343e388db43ba1f4ddcd602fedcb763c` 与 lwIP `2758df4cd3666b3b2a5b53830148379326425c0d`，分别用独立 build/sdkconfig 完整构建：C3 app 为 954432 字节、SHA-256 `72b881a2e68bcdbbbd2e2165db5b15ceab6a229c721fabc4c669db0357cdddd8`；ESP32 app 为 900176 字节、SHA-256 `aed0c94bcbf2940770a9d3c3ca976de4082dfb882f1386d7f3045602c8a3ba00`。构建使用空网络输入，未建立 Broker/TLS 会话，也未写任一设备。复制目录不含 `.git`，因此镜像摘要只绑定本次仓外构建输入，不宣称不同路径的位级复现。
+
+这使 C3 低内存修正与双目标样例在单一候选中通过软件门禁；现有 Base 的 MQTT Git pin 未切到本分支，真实两板 Broker/命令 ACK、三槽满峰值和百次资源回收仍按五仓计划的 P3-07/P3-08 验证。

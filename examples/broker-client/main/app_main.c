@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
+#include "sdkconfig.h"
 #include "emqtt.h"
+#if CONFIG_IDF_TARGET_ESP32C3
 #include "driver/usb_serial_jtag_vfs.h"
+#elif CONFIG_IDF_TARGET_ESP32
+#include "driver/uart.h"
+#include "driver/uart_vfs.h"
+#else
+#error "Broker sample supports only esp32c3 and esp32"
+#endif
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_netif.h"
@@ -239,9 +247,13 @@ static void serial_input(void)
 void app_main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
-    puts("ESP_MQTT_LAB_ONLY broker_client sdk=6.1 target=esp32c3");
+    printf("ESP_MQTT_LAB_ONLY broker_client sdk=6.1 target=%s\n", CONFIG_IDF_TARGET);
     if (!prepare_config()) { puts("EMQTT_SAMPLE valid_private_inputs_required; no_network_started"); return; }
+#if CONFIG_IDF_TARGET_ESP32C3
     usb_serial_jtag_vfs_use_nonblocking();
+#else
+    uart_vfs_dev_use_nonblocking(UART_NUM_0);
+#endif
     esp_err_t error = start_network();
     if (error != ESP_OK) { printf("EMQTT_SAMPLE wifi_init_error=%d\n", error); return; }
     esp_sntp_config_t ntp = ESP_NETIF_SNTP_DEFAULT_CONFIG(sample_ntp_server);
