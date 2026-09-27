@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 2 || $# -gt 3 ]]; then
-  printf '用法：%s <esp-mqtt 源目录> <仓外输出目录> [full|unsub-only|qos1-ack|tls]\n' "$0" >&2
+  printf '用法：%s <esp-mqtt 源目录> <仓外输出目录> [full|unsub-only|qos1-ack|tls|lifecycle]\n' "$0" >&2
   exit 2
 fi
 if [[ -z "${IDF_PATH:-}" ]] || ! command -v idf.py >/dev/null 2>&1; then
@@ -13,8 +13,8 @@ source_repo="$(cd -- "$1" && pwd -P)"
 mkdir -p -- "$2"
 output_dir="$(cd -- "$2" && pwd -P)"
 scenario="${3:-full}"
-if [[ "$scenario" != full && "$scenario" != unsub-only && "$scenario" != qos1-ack && "$scenario" != tls ]]; then
-  printf 'scenario 只能是 full、unsub-only、qos1-ack 或 tls\n' >&2
+if [[ "$scenario" != full && "$scenario" != unsub-only && "$scenario" != qos1-ack && "$scenario" != tls && "$scenario" != lifecycle ]]; then
+  printf 'scenario 只能是 full、unsub-only、qos1-ack、tls 或 lifecycle\n' >&2
   exit 2
 fi
 if [[ -e "$output_dir/mqtt" || -L "$output_dir/mqtt" ]]; then
@@ -37,6 +37,8 @@ fi
 cp -- "$harness_dir/main/CMakeLists.txt" "$project_dir/main/"
 if [[ "$scenario" == tls ]]; then
   cp -- "$harness_dir/main/tls_main.c" "$project_dir/main/main.c"
+elif [[ "$scenario" == lifecycle ]]; then
+  cp -- "$harness_dir/main/lifecycle_main.c" "$project_dir/main/main.c"
 elif [[ "$scenario" == qos1-ack ]]; then
   cp -- "$harness_dir/main/qos1_main.c" "$project_dir/main/main.c"
 else
@@ -55,6 +57,10 @@ if [[ "$scenario" == tls ]]; then
     --app "$output_dir/build/esp_mqtt_linux_broker_probe.elf"
 elif [[ "$scenario" == qos1-ack ]]; then
   python3 "$harness_dir/run_qos1_test.py" \
+    --app "$output_dir/build/esp_mqtt_linux_broker_probe.elf"
+elif [[ "$scenario" == lifecycle ]]; then
+  python3 "$harness_dir/run_lifecycle_test.py" \
+    --count "${EMQTT_LIFECYCLE_COUNT:-100}" \
     --app "$output_dir/build/esp_mqtt_linux_broker_probe.elf"
 else
   python3 "$harness_dir/run_broker_test.py" --scenario "$scenario" \

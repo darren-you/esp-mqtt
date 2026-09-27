@@ -39,6 +39,8 @@ bash examples/broker-client/lab-broker-loopback.sh
 
 脚本在仅当前用户可读的临时目录生成一次性 CA/服务端证书，Broker 只监听 `127.0.0.1` 随机端口，验证严格 TLS、QoS0/1、retained 和 4096/4097 字节传输，退出即清理。这只证明主机实验 Broker 及 CLI 路径可用；回环地址不能供 C3 使用，也不执行本仓 MQTT 客户端。
 
+本仓另有[真实核心 Linux Broker 百次生命周期回归](../../docs/verification/mqtt-linux-broker-lifecycle-100.md)，由同一 `mqtt` 组件而非此设备样例运行。它补充主机侧 CONNECT/SUBACK、QoS1、重连、UNSUBACK 和销毁证据，不改变以下逐板验收步骤。
+
 串口驱动的回执顺序、在线入队失败与缺失 PUBACK 拒绝可在无设备的主机上回归：
 
 ```bash
