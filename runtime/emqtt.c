@@ -152,6 +152,8 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
                 }
             } else {
                 r->receiver.message = &r->messages[r->receiver_slot];
+                /* 完整结构会交给调用方；复用槽时清除上一条消息的尾部。 */
+                memset(r->receiver.message, 0, sizeof(*r->receiver.message));
             }
         }
         const emqtt_fragment_t fragment = {.topic = event->topic, .topic_length = event->topic_len,

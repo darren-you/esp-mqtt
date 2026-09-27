@@ -22,7 +22,7 @@ flowchart LR
     linux --> sources
 ```
 
-在独立 checkout 根运行 `bash tests/host/run.sh`；脚本创建并清理临时构建目录，不读取 Base、工作区根、环境中的 Broker 凭据或真实硬件。测试覆盖非 UUID ClientID、配置复制、TLS 时间前置、动态订阅与精确回执、4 KiB 重组、失败释放和 100 次生命周期；通过不等于 P3b 实板/Broker 验收。
+在独立 checkout 根运行 `bash tests/host/run.sh`；脚本创建并清理临时构建目录，不读取 Base、工作区根、环境中的 Broker 凭据或真实硬件。测试覆盖非 UUID ClientID、配置复制、TLS 时间前置、动态订阅与精确回执、4 KiB 重组、消息槽复用时清除旧 Topic／payload 尾部、失败释放和 100 次生命周期；通过不等于 P3b 实板/Broker 验收。
 
 `c3-smoke` 在固定 SDK 下编译并链接官方核心与新运行接口，已生成 C3 镜像；它不连接网络、不读写设备，详见[C3 编译检验](c3-smoke/README.md)。
 

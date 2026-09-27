@@ -178,6 +178,25 @@ int main(void)
     assert(emqtt_start(r, true, true) == ESP_OK);
     current_task = 2; assert(emqtt_stop(r) == ESP_ERR_INVALID_STATE); current_task = 1;
     connect_ready(r);
+    /* 公共消息是整结构副本：复用槽后不能携带上一条消息的残留字节。 */
+    char private_topic[] = "unit/private";
+    char private_payload[] = "private-data";
+    for (int i = 0; i < 3; ++i) {
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 100 + i,
+            .topic = private_topic, .topic_len = (int)sizeof(private_topic) - 1,
+            .data = private_payload, .data_len = (int)sizeof(private_payload) - 1,
+            .total_data_len = (int)sizeof(private_payload) - 1, .qos = 1});
+        assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE);
+    }
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 103,
+        .topic = "unit/in", .topic_len = 7, .data = "z", .data_len = 1,
+        .total_data_len = 1, .qos = 1});
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE &&
+           output.message.length == 1 && output.message.payload[0] == 'z');
+    for (size_t i = 8; i < sizeof(output.message.topic); ++i)
+        assert(output.message.topic[i] == '\0');
+    for (size_t i = output.message.length; i < sizeof(output.message.payload); ++i)
+        assert(output.message.payload[i] == 0);
     /* 回执按实际到达时刻判定；owner 晚些 poll 不应误报超时。 */
     assert(emqtt_subscribe(r, "unit/timely", 0) == ESP_OK);
     char timely_grant = 0;
