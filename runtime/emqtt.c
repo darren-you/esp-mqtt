@@ -14,7 +14,7 @@
 #if defined(CONFIG_IDF_TARGET_ESP32) && defined(CONFIG_FREERTOS_UNICORE) && \
     defined(CONFIG_ESP32_IRAM_AS_8BIT_ACCESSIBLE_MEMORY)
 #include "esp_heap_caps.h"
-#define EMQTT_RUNTIME_IRAM_8BIT 1
+#define EMQTT_STORAGE_IRAM_8BIT 1
 #endif
 #endif
 
@@ -64,6 +64,17 @@ struct emqtt_runtime {
     int64_t subscription_deadline_us;
 };
 static emqtt_runtime_t *s_instance;
+
+static void *emqtt_storage_calloc(size_t size)
+{
+#ifdef EMQTT_STORAGE_IRAM_8BIT
+    /* The single-core ESP32 keeps bounded MQTT state in byte-accessible IRAM;
+     * free() also accepts pointers returned by heap_caps_calloc(). */
+    return heap_caps_calloc(1, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_IRAM_8BIT);
+#else
+    return calloc(1, size);
+#endif
+}
 
 static bool owned(const emqtt_runtime_t *r)
 {
@@ -165,7 +176,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
             if (xQueueReceive(r->free_slots, &r->receiver_slot, 0) != pdTRUE) {
                 r->receiver_slot = -1;
             }
-            r->receiver.message = calloc(1, sizeof(*r->receiver.message));
+            r->receiver.message = emqtt_storage_calloc(sizeof(*r->receiver.message));
             if (!r->receiver.message) {
                 if (r->receiver_slot >= 0)
                     (void)xQueueSend(r->free_slots, &r->receiver_slot, 0);
@@ -236,14 +247,7 @@ esp_err_t emqtt_create(const emqtt_config_t *config, emqtt_runtime_t **out)
 #endif
     if (!out || !emqtt_config_valid(config, lab)) return ESP_ERR_INVALID_ARG;
     if (s_instance) return ESP_ERR_INVALID_STATE;
-#ifdef EMQTT_RUNTIME_IRAM_8BIT
-    /* The fixed configuration and queue metadata live for the whole session;
-     * reserve ordinary DRAM for the SDK TLS client and in-flight payloads. */
-    emqtt_runtime_t *r = heap_caps_calloc(1, sizeof(*r),
-        MALLOC_CAP_INTERNAL | MALLOC_CAP_IRAM_8BIT);
-#else
-    emqtt_runtime_t *r = calloc(1, sizeof(*r));
-#endif
+    emqtt_runtime_t *r = emqtt_storage_calloc(sizeof(*r));
     if (!r) return ESP_ERR_NO_MEM;
     r->owner = xTaskGetCurrentTaskHandle();
     r->config = *config;
