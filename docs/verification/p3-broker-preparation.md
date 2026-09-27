@@ -54,3 +54,4 @@ bash examples/broker-client/build.sh /Users/darrenyou/.cache/darren-space/esp-mq
 同日新增的[真实核心 Linux TLS 回归](mqtt-tls-linux.md)在关闭明文实验开关后，验证本机一次性证书的正确 CA/主机名可完成 SUBACK 和 QoS1 PUBACK，错误 CA/主机名均在 MQTT CONNECT 前被拒绝。该软件回环不改变本节两板实测缺口，也不把测试 CA 带入样例固件。
 
 2026-09-27 的 C3 历史 Flash 与独立样例分区差异、单槽写入判定及写前恢复条件，见 [C3 实板写前检查点](p3-c3-board-preflight.md)。该记录未执行串口或设备写入。
+2026-09-27 的 ESP32 历史 ESP-AT 布局与空输入样例的默认刷写冲突、单槽启动判定及恢复前提，见 [ESP32 实板写前检查点](p3-esp32-board-preflight.md)。该记录未执行串口或设备写入。
