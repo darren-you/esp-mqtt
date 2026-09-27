@@ -1,6 +1,6 @@
 # ESP MQTT
 
-`esp-mqtt` 是从官方 ESP-MQTT v1.1.0 固定提交 `1a1e5788a5cf57a0f44a3c6c061407f6c9be1026` 派生的独立 ESP-IDF `mqtt` 组件。官方 MQTT 编解码与 QoS 主体保留上游源码与历史；本仓在断线时精确清理 clean session 未确认的订阅控制报文，并保留 QoS 发布重试。新增通用 `emqtt_` 运行接口负责有界配置、订阅就绪、事件副本、分片重组与生命周期；入站片通常直接写入预留消息槽，三槽占满时为第四条在途消息临时分配一个消息缓冲，[C3 字节账本与验证](docs/verification/c3-low-memory.md)记录常驻申请与动态峰值。上游许可为 Apache-2.0，来源和逐层差异见[来源归属与差异盘点](docs/design/source-provenance.md)。Base 已删除原通用运行层，并在普通固件接入 MQTT owner 与设备命令；真实 Broker/设备 ACK、迁移和新组件独立实板验收仍待完成。
+`esp-mqtt` 是从官方 ESP-MQTT v1.1.0 固定提交 `1a1e5788a5cf57a0f44a3c6c061407f6c9be1026` 派生的独立 ESP-IDF `mqtt` 组件。官方 MQTT 编解码与 QoS 主体保留上游源码与历史；本仓在断线时精确清理 clean session 未确认的订阅控制报文，并保留 QoS 发布重试。通用 `emqtt_` 运行接口负责有界配置、订阅就绪、事件副本、分片重组与生命周期；入站消息在首片到达时分配，最多保留三条已完成消息与第四条在途消息。[入站消息体存活期](docs/verification/mqtt-inbound-message-lifetime.md)记录释放与容量边界；经典 ESP32 单核且启用 8BIT IRAM 时，运行实例和入站消息体放入该内存区域，[同镜像容量检查点](docs/verification/mqtt-esp32-iram-placement.md)记录对照。上游许可为 Apache-2.0，来源和逐层差异见[来源归属与差异盘点](docs/design/source-provenance.md)。Base 已删除原通用运行层，并在普通固件接入 MQTT owner 与设备命令；真实 Broker/设备 ACK、迁移和新组件独立实板验收仍待完成。
 
 ## 架构拓扑
 
@@ -43,6 +43,7 @@ ESP32-C3 与 ESP32-D0WD-V3 分别以 IDF target `esp32c3`、`esp32` 构建，均
 
 - [运行层与测试](tests/README.md)
 - [入站消息体存活期与资源边界](docs/verification/mqtt-inbound-message-lifetime.md)
+- [经典 ESP32 MQTT 运行实例与消息体 IRAM 放置](docs/verification/mqtt-esp32-iram-placement.md)
 - [来源归属与差异盘点](docs/design/source-provenance.md)
 - [P3-04 本机回归记录](docs/verification/p3-host-regression.md)
 - [订阅控制报文断线回归](docs/verification/mqtt-control-reconnect-linux.md)

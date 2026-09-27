@@ -1,0 +1,11 @@
+# 经典 ESP32 MQTT 存储放置与同镜像容量检查点
+
+2026-09-28。源提交 `bebde3971c2f4b4ee99e150348213222bfd9e27e` 只在 `CONFIG_IDF_TARGET_ESP32`、`CONFIG_FREERTOS_UNICORE` 与 `CONFIG_ESP32_IRAM_AS_8BIT_ACCESSIBLE_MEMORY` 同时启用时，让 `emqtt_runtime_t` 和按消息存活期分配的 `emqtt_message_t` 使用 ESP-IDF `MALLOC_CAP_INTERNAL | MALLOC_CAP_IRAM_8BIT`；普通 `free()` 仍释放这两类对象。C3 与其他目标继续用原 `calloc`。队列槽数、4096 B 载荷上限、第四条在途消息、严格 TLS、QoS 与错误关闭合同未变；IRAM 申请失败仍返回原内存错误／关闭会话，没有悄悄转用其他区域。先前 [入站消息存活期检查点](mqtt-inbound-message-lifetime.md)的三枚指针与首片分配仍成立。
+
+动机来自同一 Base 源码、固定 SDK `578cf89c`、ESP32 候选 4 MiB 布局、测试键签名 guest、OpenETH、固定测试时钟及本机隔离 Broker/官方 FRPS 的容量试验。旧 `esp-mqtt@a67cb8f` 的 MQTT TLS 连接与 SUBACK、FRP 严格 CA／IP SAN 验签、注册、Pong 及 300001 B 双向工作流均成功，但未投递消息时普通 8BIT 堆历史低水为 **44,792 B**；在 FRP 工作期间另投递 4096 B QoS1 入站消息后为 **47,612 B**，均低于不变的 **49,152 B** 门。`ed23a0c` 只移动常驻实例时，无入站消息的同类切片最低 **52,224 B**，而 4096 B 消息切片仍只有 **47,612 B**。不同运行时序与内存碎片会波动，这些数字不能逐项相减归因；消息体进一步移往 IRAM 的理由是它在 FRP 工作期间与控制任务未取走的消息共同存活。
+
+最终 `bebde39` 与对应 Base 官方重解的 ESP32 锁 SHA-256 `8393de8448b57ba91215177c5a24cc1529f0c78fb595cb79bab3d0238a552d31`、C3 锁 `9cda22a703432add42dd4d04f7e70294e91de74bd74041d09d4e067fb51ace42` 均核对实际 `runtime/emqtt.c` SHA-256 `ffff14b1143b7a458e0eab9838702826e3c8b1995e809d4d1c643ae2120799c8`。本仓 `bash tests/host/run.sh` 的 ASan／UBSan 与 Python 工具 8/8 通过；两目标 Base 的正式分区签名构建均通过官方验签及 app 尺寸检查。
+
+最终 ESP32 仓外诊断镜像 ECDSA v1 app `0x10fff4` B、SHA-256 `129ffc27fdc20b66bad962f32345dbbdbb8662f6e7ec76b1cb9693f965d8e227`，经官方验签；按此 app 摘要重新生成 ECS2 sequence 6，整片 Flash 种子 SHA-256 `2f1a97ce9cffb56081a7a22a4223a45a5fce1a048bc67b1c484f53376ad6c5b0`。QEMU 中 Container guest 为 `RUNNING`、Base 为 `READY`；MQTT 对本机隔离 Broker 完成 TLS 1.2、CONNECT 与 `qemu/in` 的 SUBACK。在官方 FRPS 登录／注册／Pong 和一条 300001 B 双向逐字节回显工作流期间，Broker 以 QoS1 投递 **4096 B**，设备随后交付长度 4096 B 的 `EMQTT_EVENT_MESSAGE`。普通内部 8BIT 堆历史最低 **53,380 B**，高于门 **4,228 B**；该阶段 IRAM 8BIT 可用 **45,116 B**、最大连续块 **40,960 B**。原始 UART SHA-256 `2578525fca82ba483131077c6427eeb96f20ea6c5d84241a5f67be4c9425f277`；完整输入、Broker/FRPS 日志与机器结果在 `mac-work-1:/private/tmp/esp-base-mqtt-frps-tls-message-iram-20260928/`。签名 app、包区、`base_store` 读回未变，FRP scratch 恢复全擦；本轮未写实体板。
+
+此试验只有一条 FRP 工作流、一条排队 MQTT 入站消息和仓外直连探针；未覆盖三条已排队加第四条在途消息、双活跃流加预备流、OTA HTTPS 下载、Base 正式 Wi-Fi／SNTP／HMAC owner、真实无线与两块板。模拟网络单次低水高于门，只能作为下一轮组合容量输入，不能给 P6-03、P3-08 或 P7-02 总验收打勾。测试停止 OpenETH 后 MQTT 报 transport/TLS 错误及断线，属诊断脚本的关网顺序，不据此宣称连接长稳或优雅停机完成。
