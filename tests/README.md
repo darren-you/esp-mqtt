@@ -40,6 +40,8 @@ bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-lifecycle lifec
 
 `lifecycle` 默认让同一 Linux 进程依次完成 100 次真实核心创建、初始与动态订阅、QoS1 PUBACK、Broker 强制断线、clean session 重连后重新订阅、UNSUBACK、显式停止和销毁；每轮连接由隔离 Broker 逐包核对。短轮次排错可设 `EMQTT_LIFECYCLE_COUNT=2`，正式记录使用默认 100。脚本记录每轮当前 RSS、macOS 默认 malloc zone 使用量与 0–255 范围内打开的 fd 数；这些采样和 Broker 连接数不能替代设备堆、任务、socket 与两板实测。见[真实核心百次 Broker 生命周期记录](../docs/verification/mqtt-linux-broker-lifecycle-100.md)。
 
+Base 当前精确锁 `esp-mqtt@c0677e5` 的严格 TLS、百次 Broker 生命周期及 host sanitizer 复验见[当前精确锁的 Linux Broker 回归](../docs/verification/mqtt-current-lock-broker-recheck.md)。
+
 新版通过和旧版复现的精确对照见[订阅控制报文断线回归](../docs/verification/mqtt-control-reconnect-linux.md)。
 [QoS1 ACK 与重投回归](../docs/verification/mqtt-qos1-ack-linux.md)记录独立真实核心场景及事件语义。
 
