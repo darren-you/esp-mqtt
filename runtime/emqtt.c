@@ -9,6 +9,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#if defined(CONFIG_IDF_TARGET_ESP32) && defined(CONFIG_FREERTOS_UNICORE) && \
+    defined(CONFIG_ESP32_IRAM_AS_8BIT_ACCESSIBLE_MEMORY)
+#include "esp_heap_caps.h"
+#define EMQTT_RUNTIME_IRAM_8BIT 1
+#endif
+#endif
+
 #if !CONFIG_MQTT_REPORT_DELETED_MESSAGES
 #error "MQTT outbox expiry must report deleted messages"
 #endif
@@ -227,7 +236,14 @@ esp_err_t emqtt_create(const emqtt_config_t *config, emqtt_runtime_t **out)
 #endif
     if (!out || !emqtt_config_valid(config, lab)) return ESP_ERR_INVALID_ARG;
     if (s_instance) return ESP_ERR_INVALID_STATE;
+#ifdef EMQTT_RUNTIME_IRAM_8BIT
+    /* The fixed configuration and queue metadata live for the whole session;
+     * reserve ordinary DRAM for the SDK TLS client and in-flight payloads. */
+    emqtt_runtime_t *r = heap_caps_calloc(1, sizeof(*r),
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_IRAM_8BIT);
+#else
     emqtt_runtime_t *r = calloc(1, sizeof(*r));
+#endif
     if (!r) return ESP_ERR_NO_MEM;
     r->owner = xTaskGetCurrentTaskHandle();
     r->config = *config;
