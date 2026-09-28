@@ -17,6 +17,7 @@ flowchart LR
 ```bash
 python3 tools/sdk.py prepare --path "$HOME/.espressif/frameworks/esp-mqtt-idf"
 bash "$HOME/.espressif/frameworks/esp-mqtt-idf/install.sh" esp32c3
+bash "$HOME/.espressif/frameworks/esp-mqtt-idf/install.sh" esp32
 source "$HOME/.espressif/frameworks/esp-mqtt-idf/export.sh"
 python3 tools/sdk.py check --path "$IDF_PATH"
 python3 -m unittest discover -s tools/tests -p 'test_*.py'

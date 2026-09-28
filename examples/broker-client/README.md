@@ -1,31 +1,33 @@
 # ESP MQTT 独立 Broker 样例
 
-此 ESP32-C3 工程只使用本仓 `mqtt` 组件与锁定的公开 ESP-IDF/lwIP。它从仓外头文件取得实验 Wi-Fi、Broker、CA、ClientID 与 Topic，使用 RAM Wi-Fi 和 SNTP；未取得可信时间前不启动严格 TLS 客户端。样例不初始化或擦除 NVS，不读取 Base 身份与配置，不执行任何设备物理输出。
+此工程分别支持 ESP32-C3（`esp32c3`）和 ESP32-D0WD-V3（`esp32`），只使用本仓 `mqtt` 组件与锁定的公开 ESP-IDF/lwIP。它从仓外头文件取得实验 Wi-Fi、Broker、CA、ClientID 与 Topic，使用 RAM Wi-Fi 和 SNTP；未取得可信时间前不启动严格 TLS 客户端。样例不初始化或擦除 NVS，不读取 Base 身份与配置，不执行任何设备物理输出。C3 用 USB Serial/JTAG 控制台，D0WD-V3 用 UART0/CH340 控制台；串口命令格式相同。
 
 ## 架构拓扑
 
 ```mermaid
 flowchart LR
-    inputs["仓外 sample_inputs.h：实验网络、CA 与 Topic"] --> app["main/app_main.c：RAM Wi-Fi / SNTP / owner 循环"]
+    inputs["两份仓外 sample_inputs.h：独立身份、CA 与 Topic"] --> app["main/app_main.c：双目标 RAM Wi-Fi / SNTP / owner 循环"]
     app --> runtime["本仓 runtime：emqtt_ API 与事件副本"]
     runtime --> core["本仓 mqtt：官方协议核心"]
     lock["sdk-lock.json / tools/sdk.py"] --> idf["固定 ESP-IDF 与 esp-lwip"]
     core --> idf
-    app --> serial["USB Serial/JTAG：固定测试命令与资源摘要"]
+    app --> serial["C3 USB Serial/JTAG / ESP32 UART0：固定测试命令与资源摘要"]
     cycles["serial_cycles.py：逐轮回执与资源 CSV"] --> serial
     loopback["lab-broker-loopback.sh：主机 TLS 回环自检"] --> mosquitto["隔离 Mosquitto / CLI"]
 ```
 
-复制 `inputs.example.h` 到仓外受控路径，填入隔离实验环境的 SSID、密码、NTP 主机、Broker DNS 主机、端口、PEM CA、固定 ClientID、可选用户名密码，以及订阅、动态订阅、发布和 LWT Topic。不要填生产凭据或设备持久 UUID。空示例可以编译，但启动后在接入网络前明确拒绝。当前只接受 WPA2 PSK 和 TLS Broker；构建配置拒绝明文实验开关及 PHY 校准 NVS 存储。
+复制 `inputs.example.h` 到两个独立的仓外受控路径，分别填入隔离实验环境的 SSID、密码、NTP 主机、Broker DNS 主机、端口、PEM CA、固定 ClientID、可选用户名密码，以及订阅、动态订阅、发布和 LWT Topic。两台的 ClientID、测试 Topic 与 Broker 账户/ACL 须相互隔离，避免同时在线时相互踢出或串收消息；不要填生产凭据或设备持久 UUID。空示例可以编译，但启动后在接入网络前明确拒绝。当前只接受 WPA2 PSK 和 TLS Broker；构建配置拒绝明文实验开关及 PHY 校准 NVS 存储。
 
 准备[锁定 SDK](../../tools/README.md)并导出 `IDF_PATH` 后，从仓根构建到独立输出目录：
 
 ```bash
-EMQTT_SAMPLE_INPUTS=/private/lab/sample_inputs.h \
-  bash examples/broker-client/build.sh /private/build/esp-mqtt-broker
+EMQTT_SAMPLE_INPUTS=/private/lab/c3/sample_inputs.h \
+  bash examples/broker-client/build.sh /private/build/esp-mqtt-broker-c3 esp32c3
+EMQTT_SAMPLE_INPUTS=/private/lab/esp32/sample_inputs.h \
+  bash examples/broker-client/build.sh /private/build/esp-mqtt-broker-esp32 esp32
 ```
 
-不设置 `EMQTT_SAMPLE_INPUTS` 时使用空示例。`build.sh` 要求输出目录仅当前用户可访问，因为构建时会复制输入头文件；它在输出目录创建名为 `mqtt` 的临时源码入口，以满足 IDF 组件名，不复制或修改组件源码。构建不会刷板。真实设备写入须先独立核对精确板卡、分区、设备身份、两份一致的完整 Flash 恢复基线与本轮授权；此样例的构建成功不构成联网实板验收。
+不设置 `EMQTT_SAMPLE_INPUTS` 时使用空示例；省略第二参数默认 `esp32c3`。两个 target 必须使用不同输出目录，分别保存最终 `sdkconfig`、镜像和摘要。`build.sh` 要求输出目录仅当前用户可访问，因为构建时会复制输入头文件；它在输出目录创建名为 `mqtt` 的临时源码入口，以满足 IDF 组件名，不复制或修改组件源码。构建不会刷板。真实设备写入须先独立核对精确板卡、分区、设备身份、两份一致的完整 Flash 恢复基线与本轮授权；此样例的构建成功不构成联网实板验收。
 
 ## 本机 Broker 回环
 
@@ -59,7 +61,7 @@ python3 -m unittest discover -s examples/broker-client -p 'test_serial_cycles.py
 
 事件种类对应 `runtime/include/emqtt.h`：`0=CONNECTED`、`1=READY`、`2=DISCONNECTED`、`3=MESSAGE`、`4=PUBACK`、`5=DELETED`、`6=UNSUBSCRIBED`、`7=ERROR`。`EMQTT_SAMPLE_EVENT` 打印错误、消息 ID、Broker 返回码、TLS 标志、Topic、长度、QoS、retain、duplicate 与收到的载荷 CRC32，不打印载荷或秘密；非 MESSAGE 事件的消息字段为零。`EMQTT_SAMPLE` 打印资源值。CRC32 用于实验载荷比对，不充当安全摘要。`READY` 只在本次 SUBACK 逐项通过后出现。`start` 在 Wi-Fi 与可信时间未就绪时返回错误；连接成功或命令返回零不等于 Broker 完成相应操作。
 
-获准写入并启动真实 C3 后，隔离 Broker 必须在实验 Wi-Fi 可达的私有地址监听 TLS，输入的 DNS 主机名须与服务端证书 SAN 匹配；从 Broker 侧留存 CONNECT/SUBSCRIBE/PUBLISH/PUBACK/断开记录。不要把本机回环脚本的 `127.0.0.1`、一次性 CA 或匿名配置当作设备/生产 Broker。先记录本仓完整提交、镜像 SHA-256、固定 IDF/lwIP SHA、构建配置、板卡与串口，再按以下顺序执行，同一候选才可组成 P3-07 证据：
+获准分别写入并启动两台真实板后，隔离 Broker 必须在实验 Wi-Fi 可达的私有地址监听 TLS，输入的 DNS 主机名须与服务端证书 SAN 匹配；从 Broker 侧留存 CONNECT/SUBSCRIBE/PUBLISH/PUBACK/断开记录。不要把本机回环脚本的 `127.0.0.1`、一次性 CA 或匿名配置当作设备/生产 Broker。逐板记录本仓完整提交、镜像 SHA-256、固定 IDF/lwIP SHA、构建配置、板卡与当次核对的串口，再按以下顺序执行；一台的结果不代替另一台，同一候选才可组成各自 P3-07 证据：
 
 1. 等待 Wi-Fi、SNTP、严格 TLS、CONNECTED、初始 SUBACK 和 READY。用 `publish0`、`publish`、`publish4k` 比对 Broker 侧 QoS、消息 ID、PUBACK 与 4096 字节内容；用隔离发布端向初始订阅 Topic 分别发送 QoS0/1、4096 与 4097 字节。4096 字节 `A` 的接收 CRC32 应为 `fea63440`；4097 字节必须报告分片/容量错误，不能成为完整 MESSAGE。
 2. 对动态 Topic 执行 `subscribe`，核对该新增订阅的 READY 与 Broker SUBACK，再由发布端投递；执行 `unsubscribe`，核对 UNSUBACK，随后确认该 filter 不再交付。用 Broker ACL 拒绝订阅，核对 ERROR/失败状态；分别用隔离的错误账号和错误 CA 构建输入验证认证与证书拒绝。
@@ -72,4 +74,4 @@ python3 examples/broker-client/serial_cycles.py \
   > /private/lab/esp-mqtt-cycles.csv
 ```
 
-错误认证、证书、订阅拒绝、4 KiB 超限和丢 ACK 分别需要相应实验 Broker/输入配置；不能用单次正常会话推断这些负例。真实设备写入仍须先满足上文的精确板卡、分区与两份一致完整 Flash 恢复基线，并取得本轮授权。当前这些实板步骤均未执行，不能把本机脚本或固定 SDK 编译记为 P3-06/P3-07 验收。本轮已验证的软件输入和缺口见 [P3 Broker 软件准备记录](../../docs/verification/p3-broker-preparation.md)。
+错误认证、证书、订阅拒绝、4 KiB 超限和丢 ACK 分别需要相应实验 Broker/输入配置；不能用单次正常会话推断这些负例。真实设备写入仍须先满足上文的精确板卡、分区与两份一致完整 Flash 恢复基线，并取得本轮授权。双目标样例已通过固定 SDK 编译链接，但两台实板步骤尚未验证；本机或远端空输入构建不能记为 P3-07 验收。软件输入、镜像摘要与缺口见 [P3 Broker 软件准备记录](../../docs/verification/p3-broker-preparation.md)。

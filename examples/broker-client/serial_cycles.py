@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""在获准运行的实验 C3 上逐次验证 100 次 MQTT 实例回收。"""
+"""在获准运行的实验 ESP32-C3 或 ESP32 上逐次验证 MQTT 实例回收。"""
 
 import argparse
 import csv
@@ -82,7 +82,7 @@ def run(port, count, timeout_seconds):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", required=True, help="当次明确核对的实验 C3 串口")
+    parser.add_argument("--port", required=True, help="当次明确核对的目标板串口")
     parser.add_argument("--count", type=int, default=100)
     parser.add_argument("--timeout-seconds", type=float, default=45)
     args = parser.parse_args()

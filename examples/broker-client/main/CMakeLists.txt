@@ -1,6 +1,13 @@
+if(IDF_TARGET STREQUAL "esp32c3")
+    set(sample_console_component esp_driver_usb_serial_jtag)
+elseif(IDF_TARGET STREQUAL "esp32")
+    set(sample_console_component esp_driver_uart)
+else()
+    message(FATAL_ERROR "Broker sample supports only esp32c3 and esp32")
+endif()
 idf_component_register(SRCS "app_main.c"
     INCLUDE_DIRS "." "${CMAKE_CURRENT_BINARY_DIR}"
-    REQUIRES mqtt esp_wifi esp_event esp_netif esp_timer heap esp_driver_usb_serial_jtag)
+    REQUIRES mqtt esp_wifi esp_event esp_netif esp_timer heap ${sample_console_component})
 if(NOT EMQTT_SAMPLE_INPUTS)
     set(EMQTT_SAMPLE_INPUTS "${CMAKE_CURRENT_LIST_DIR}/../inputs.example.h")
 endif()
