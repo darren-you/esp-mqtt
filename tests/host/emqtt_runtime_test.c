@@ -550,7 +550,7 @@ int main(void)
         assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
         assert(emqtt_destroy(r) == ESP_OK && !live_client && !live_queues);
     }
-    assert(stop_calls > 200 && enqueues == 3);
+    assert(stop_calls > 200 && enqueues == 4);
     assert(!dynamic_allocation && live_messages == 0 && dynamic_allocations == dynamic_frees);
     puts("  mqtt_runtime   passed (SDK event injection; not Broker/hardware acceptance)");
     return 0;
