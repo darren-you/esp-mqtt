@@ -58,7 +58,7 @@ void app_main(void)
             }
             if (event.kind == EMQTT_EVENT_READY) {
                 if (++ready_count == 1) {
-                    static char large_payload[EMQTT_PUBLISH_PAYLOAD_MAX];
+                    static char large_payload[EMQTT_PUBLISH_PAYLOAD_MAX_BYTES];
                     memset(large_payload, 'x', sizeof large_payload);
                     memcpy(large_payload, "delayed-ack", 11);
                     if (emqtt_enqueue(runtime, "test/publish", large_payload, sizeof large_payload,

@@ -37,7 +37,7 @@ esp_err_t emqtt_stop(emqtt_runtime_t *runtime);
 esp_err_t emqtt_destroy(emqtt_runtime_t *runtime);
 bool emqtt_poll(emqtt_runtime_t *runtime, emqtt_event_t *out);
 emqtt_state_t emqtt_state(const emqtt_runtime_t *runtime);
-/* Payload is copied by the official outbox; at most EMQTT_PUBLISH_PAYLOAD_MAX
+/* Payload is copied by the official outbox; at most EMQTT_PUBLISH_PAYLOAD_MAX_BYTES
  * bytes. Queue capacity and OUTBOX_FULL still apply independently. */
 esp_err_t emqtt_enqueue(emqtt_runtime_t *runtime, const char *topic,
                                 const void *payload, size_t length, uint8_t qos, bool retain, int *message_id);

@@ -7,7 +7,7 @@
 #define EMQTT_PAYLOAD_MAX 4096u
 /* Outbound documents can include an inbound-sized body plus bounded metadata.
  * This does not enlarge inbound messages, fragment buffers or event queues. */
-#define EMQTT_PUBLISH_PAYLOAD_MAX 5120u
+#define EMQTT_PUBLISH_PAYLOAD_MAX_BYTES 5120u
 #define EMQTT_TOPIC_MAX 256u
 #define EMQTT_CLIENT_ID_MAX 128u
 #define EMQTT_SUBSCRIPTIONS_MAX 8u

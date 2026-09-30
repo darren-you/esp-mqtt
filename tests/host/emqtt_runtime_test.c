@@ -241,7 +241,7 @@ int main(void)
     assert(emqtt_enqueue(r, "unit/out", "not-a-payload", 0, 0, false, &id) == ESP_OK && id == 0);
     assert(sent_data == NULL && sent_length == 0 && sent_qos == 0);
     assert(emqtt_enqueue(r, "unit/+", "x", 1, 1, false, &id) == ESP_ERR_INVALID_ARG);
-    char large_payload[EMQTT_PUBLISH_PAYLOAD_MAX];
+    char large_payload[EMQTT_PUBLISH_PAYLOAD_MAX_BYTES];
     memset(large_payload, 'v', sizeof large_payload);
     assert(emqtt_enqueue(r, "unit/out", large_payload, sizeof large_payload,
                          1, false, &id) == ESP_OK);
