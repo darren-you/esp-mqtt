@@ -449,7 +449,7 @@ esp_err_t emqtt_enqueue(emqtt_runtime_t *r, const char *topic,
 {
     if (!owned(r) || !r->started || r->state == EMQTT_FAILED) return ESP_ERR_INVALID_STATE;
     if (!message_id || !topic || !emqtt_topic_valid(topic, strnlen(topic, EMQTT_TOPIC_MAX + 1), false) ||
-        length > EMQTT_PAYLOAD_MAX || (!payload && length) || qos > 1) return ESP_ERR_INVALID_ARG;
+        length > EMQTT_PUBLISH_PAYLOAD_MAX || (!payload && length) || qos > 1) return ESP_ERR_INVALID_ARG;
     /* 零长度传 NULL：官方 API 对非 NULL/len=0 会隐式 strlen。 */
     const int id = esp_mqtt_client_enqueue(r->client, topic, length ? payload : NULL, (int)length, qos, retain, true);
     const esp_err_t error = api_result(id);

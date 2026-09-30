@@ -241,7 +241,14 @@ int main(void)
     assert(emqtt_enqueue(r, "unit/out", "not-a-payload", 0, 0, false, &id) == ESP_OK && id == 0);
     assert(sent_data == NULL && sent_length == 0 && sent_qos == 0);
     assert(emqtt_enqueue(r, "unit/+", "x", 1, 1, false, &id) == ESP_ERR_INVALID_ARG);
-    assert(emqtt_enqueue(r, "unit/out", "x", 4097, 1, false, &id) == ESP_ERR_INVALID_ARG);
+    char large_payload[EMQTT_PUBLISH_PAYLOAD_MAX];
+    memset(large_payload, 'v', sizeof large_payload);
+    assert(emqtt_enqueue(r, "unit/out", large_payload, sizeof large_payload,
+                         1, false, &id) == ESP_OK);
+    assert(sent_data == large_payload && sent_length == (int)sizeof large_payload && sent_qos == 1);
+    const unsigned before_oversize = enqueues;
+    assert(emqtt_enqueue(r, "unit/out", large_payload, sizeof large_payload + 1U,
+                         1, false, &id) == ESP_ERR_INVALID_ARG && enqueues == before_oversize);
     assert(emqtt_outbox_size(r) == 123);
     char bytes[] = "abcdef";
     emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 10, .topic = "unit/in", .topic_len = 7,

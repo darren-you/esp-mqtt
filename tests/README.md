@@ -22,7 +22,7 @@ flowchart LR
     linux --> sources
 ```
 
-在独立 checkout 根运行 `bash tests/host/run.sh`；脚本创建并清理临时构建目录，不读取 Base、工作区根、环境中的 Broker 凭据或真实硬件。测试覆盖非 UUID ClientID、配置复制、TLS 时间前置、动态订阅与精确回执、4 KiB 重组、消息槽复用时清除旧 Topic／payload 尾部、失败释放和 100 次生命周期；通过不等于 P3b 实板/Broker 验收。
+在独立 checkout 根运行 `bash tests/host/run.sh`；脚本创建并清理临时构建目录，不读取 Base、工作区根、环境中的 Broker 凭据或真实硬件。测试覆盖非 UUID ClientID、配置复制、TLS 时间前置、动态订阅与精确回执、4 KiB 入站重组、5120 字节出站及超限拒绝、消息槽复用时清除旧 Topic／payload 尾部、失败释放和 100 次生命周期；通过不等于 P3b 实板/Broker 验收。
 
 `c3-smoke` 在固定 SDK 下编译并链接官方核心与新运行接口，已生成 C3 镜像；它不连接网络、不读写设备，详见[C3 编译检验](c3-smoke/README.md)。
 
@@ -36,7 +36,7 @@ bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-tls tls
 bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-lifecycle lifecycle
 ```
 
-输出目录放在仓外，每个场景使用独立目录。脚本通过组件 CMake 执行固定 SDK/lwIP 检查；`full` 与 `unsub-only` 核对新 clean session 的 Broker 订阅集、旧 SUB/UNSUB 不重放，以及混合 QoS1 PUBLISH 的 `DUP=1` 重发与 PUBACK。`qos1-ack` 独立核对同一连接丢 PUBACK 后按原 ID、原载荷和 `DUP=1` 重发，重复 PUBACK 只产生一次完成事件；还核对入站 QoS1 重投两次交付、两次回 PUBACK、断线后重发以及最终 outbox 清空。`tls` 关闭明文实验开关，在仅本机回环的临时 TLS Broker 上运行真实核心：正确 CA 与主机名完成 SUBACK/QoS1 PUBACK，错误 CA 与主机名均拒绝，可信时间未就绪时不启动。测试证书与密钥只在权限受限的仓外临时目录生成并在退出时删除。Linux 结果不代表两台 ESP 实板、实验 Wi-Fi、生产 Broker 或 P3-07 验收；详见 [TLS 回归记录](../docs/verification/mqtt-tls-linux.md)。
+输出目录放在仓外，每个场景使用独立目录。脚本通过组件 CMake 执行固定 SDK/lwIP 检查；`full` 与 `unsub-only` 核对新 clean session 的 Broker 订阅集、旧 SUB/UNSUB 不重放，以及混合 QoS1 PUBLISH 的 `DUP=1` 重发与 PUBACK。`qos1-ack` 使用 5120 字节出站载荷，由隔离 Broker 逐字节核对，独立核对同一连接丢 PUBACK 后按原 ID、原载荷和 `DUP=1` 重发，重复 PUBACK 只产生一次完成事件；还核对入站 QoS1 重投两次交付、两次回 PUBACK、断线后重发以及最终 outbox 清空。`tls` 关闭明文实验开关，在仅本机回环的临时 TLS Broker 上运行真实核心：正确 CA 与主机名完成 SUBACK/QoS1 PUBACK，错误 CA 与主机名均拒绝，可信时间未就绪时不启动。测试证书与密钥只在权限受限的仓外临时目录生成并在退出时删除。Linux 结果不代表两台 ESP 实板、实验 Wi-Fi、生产 Broker 或 P3-07 验收；详见 [TLS 回归记录](../docs/verification/mqtt-tls-linux.md)。
 
 `lifecycle` 默认让同一 Linux 进程依次完成 100 次真实核心创建、初始与动态订阅、QoS1 PUBACK、Broker 强制断线、clean session 重连后重新订阅、UNSUBACK、显式停止和销毁；每轮连接由隔离 Broker 逐包核对。短轮次排错可设 `EMQTT_LIFECYCLE_COUNT=2`，正式记录使用默认 100。脚本记录每轮当前 RSS、macOS 默认 malloc zone 使用量与 0–255 范围内打开的 fd 数；这些采样和 Broker 连接数不能替代设备堆、任务、socket 与两板实测。见[真实核心百次 Broker 生命周期记录](../docs/verification/mqtt-linux-broker-lifecycle-100.md)。
 

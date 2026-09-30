@@ -39,6 +39,8 @@ ESP32-C3 与 ESP32-D0WD-V3 分别以 IDF target `esp32c3`、`esp32` 构建，均
 
 `idf_component.yml` 的 `0.1.0` 是第一方组件版本，区别于官方上游 v1.1.0；当前公开源码不等于已完成组件发行或设备验收。消费者须从公开维护仓固定完整提交，不能读取本工作区 checkout、`harness/external` 或 Base 的 `managed_components`。`esp-base@a0eabdf` 已删除旧 `mqtt_runtime` 与 Registry 重复依赖，隔离实验应用直接消费本仓；`esp-base@ecf1539` 后普通固件已接入 MQTT owner 与设备命令，真实 Broker/设备 ACK 和迁移仍待验收。工作区已登记本仓 gitlink，后续版本升级须与真实消费提交一致。
 
+公开入站上限保持 4096 字节；出站上限为 5120 字节，使调用方能够发布含完整版本正文和状态元数据的有界文档。出站仍由官方 outbox 复制与限额管理，不扩大入站消息或事件队列；最大出站报文增加的堆峰值需要实板单独测量。host 边界回归和 Linux QoS1 场景覆盖该上限、逐字节 Broker 核对与丢 ACK 后的原 ID／DUP 重传。
+
 入站消息仍最多有三条完整消息等待 owner 取走；消息体从首片到达才分配，`poll` 复制交付或停止／错误清退时擦除并释放。第四条分片可临时持有缓冲，若完成时仍没有空槽则关闭会话。这个存活期收缩减少了连接空闲期占用，但满队列峰值和正式 Base 五能力同存仍需单独测量。
 
 - [运行层与测试](tests/README.md)

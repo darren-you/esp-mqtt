@@ -75,7 +75,7 @@ class QoS1Broker(Broker):
             self.note(conn, "publish", (topic, payload.decode("ascii"), message_id, duplicate))
             if topic != TOPIC_PUBLISH:
                 raise ValueError("unexpected PUBLISH topic")
-            if payload == b"delayed-ack" and conn.index == 1:
+            if payload == b"delayed-ack" + b"x" * (5120 - 11) and conn.index == 1:
                 if self.delayed_id is None:
                     if duplicate:
                         raise AssertionError("first QoS1 PUBLISH was DUP")
@@ -130,8 +130,8 @@ class QoS1Broker(Broker):
             raise AssertionError("lost PUBACK did not cross the 5 s retransmission window")
         publishes = [(index, detail) for _, index, kind, detail in self.events if kind == "publish"]
         expected = [
-            (1, (TOPIC_PUBLISH, "delayed-ack", self.delayed_id, False)),
-            (1, (TOPIC_PUBLISH, "delayed-ack", self.delayed_id, True)),
+            (1, (TOPIC_PUBLISH, "delayed-ack" + "x" * (5120 - 11), self.delayed_id, False)),
+            (1, (TOPIC_PUBLISH, "delayed-ack" + "x" * (5120 - 11), self.delayed_id, True)),
             (1, (TOPIC_PUBLISH, "reconnect", self.reconnect_id, False)),
             (2, (TOPIC_PUBLISH, "reconnect", self.reconnect_id, True)),
         ]

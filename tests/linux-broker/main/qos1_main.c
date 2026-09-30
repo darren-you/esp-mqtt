@@ -58,7 +58,10 @@ void app_main(void)
             }
             if (event.kind == EMQTT_EVENT_READY) {
                 if (++ready_count == 1) {
-                    if (emqtt_enqueue(runtime, "test/publish", "delayed-ack", 11,
+                    static char large_payload[EMQTT_PUBLISH_PAYLOAD_MAX];
+                    memset(large_payload, 'x', sizeof large_payload);
+                    memcpy(large_payload, "delayed-ack", 11);
+                    if (emqtt_enqueue(runtime, "test/publish", large_payload, sizeof large_payload,
                                       1, false, &delayed_id) != ESP_OK || delayed_id <= 0)
                         fail(runtime, "enqueue_delayed");
                     printf("TEST DELAYED id=%d\n", delayed_id);
