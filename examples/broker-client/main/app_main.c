@@ -104,8 +104,11 @@ static void time_synced(struct timeval *time_value)
 static void network_event(void *context, esp_event_base_t base, int32_t id, void *data)
 {
     (void)context;
-    (void)data;
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) atomic_store(&wifi_started, true);
+    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED && data) {
+        const wifi_event_sta_disconnected_t *event = data;
+        printf("EMQTT_SAMPLE wifi_disconnect_reason=%u\n", (unsigned)event->reason);
+    }
     if (base == WIFI_EVENT && (id == WIFI_EVENT_STA_DISCONNECTED || id == WIFI_EVENT_STA_STOP))
         atomic_store(&wifi_ready, false);
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_STOP) atomic_store(&wifi_started, false);

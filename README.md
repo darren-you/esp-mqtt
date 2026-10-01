@@ -47,6 +47,7 @@ ESP32-C3 与 ESP32-D0WD-V3 分别以 IDF target `esp32c3`、`esp32` 构建，均
 - [入站消息体存活期与资源边界](docs/verification/mqtt-inbound-message-lifetime.md)
 - [来源归属与差异盘点](docs/design/source-provenance.md)
 - [P3-04 本机回归记录](docs/verification/p3-host-regression.md)
+- [C3 Broker 实板检查点](docs/verification/c3_broker_physical_checkpoint.md)
 - [订阅控制报文断线回归](docs/verification/mqtt-control-reconnect-linux.md)
 - [QoS1 ACK 与重投回归](docs/verification/mqtt-qos1-ack-linux.md)
 - [真实核心生命周期与 transport OOM 回归](docs/verification/mqtt-lifecycle-transport-oom.md)

@@ -63,6 +63,8 @@ python3 -m unittest discover -s examples/broker-client -p 'test_serial_cycles.py
 
 事件种类对应 `runtime/include/emqtt.h`：`0=CONNECTED`、`1=READY`、`2=DISCONNECTED`、`3=MESSAGE`、`4=PUBACK`、`5=DELETED`、`6=UNSUBSCRIBED`、`7=ERROR`。`EMQTT_SAMPLE_EVENT` 打印错误、消息 ID、Broker 返回码、TLS 标志、Topic、长度、QoS、retain、duplicate 与收到的载荷 CRC32，不打印载荷或秘密；非 MESSAGE 事件的消息字段为零。`EMQTT_SAMPLE` 打印资源值。CRC32 用于实验载荷比对，不充当安全摘要。`READY` 只在本次 SUBACK 逐项通过后出现。`start` 在 Wi-Fi 与可信时间未就绪时返回错误；连接成功或命令返回零不等于 Broker 完成相应操作。
 
+Wi-Fi 断开时，样例额外打印 `EMQTT_SAMPLE wifi_disconnect_reason=<SDK 原因码>`，用于区分接入点未找到、认证失败等联网前故障；不打印 SSID、密码或设备地址。`wifi_connect_error=0` 只表示 SDK 接受连接请求，实际取得 IP 才会令 `stats` 的 `wifi=1`。
+
 获准分别写入并启动两台真实板后，隔离 Broker 必须在实验 Wi-Fi 可达的私有地址监听 TLS，输入的 DNS 主机名须与服务端证书 SAN 匹配；从 Broker 侧留存 CONNECT/SUBSCRIBE/PUBLISH/PUBACK/断开记录。不要把本机回环脚本的 `127.0.0.1`、一次性 CA 或匿名配置当作设备/生产 Broker。逐板记录本仓完整提交、镜像 SHA-256、固定 IDF/lwIP SHA、构建配置、板卡与当次核对的串口，再按以下顺序执行；一台的结果不代替另一台，同一候选才可组成各自 P3-07 证据：
 
 1. 等待 Wi-Fi、SNTP、严格 TLS、CONNECTED、初始 SUBACK 和 READY。用 `publish0`、`publish`、`publish4k` 比对 Broker 侧 QoS、消息 ID、PUBACK 与 4096 字节内容；用隔离发布端向初始订阅 Topic 分别发送 QoS0/1、4096 与 4097 字节。4096 字节 `A` 的接收 CRC32 应为 `fea63440`；4097 字节必须报告分片/容量错误，不能成为完整 MESSAGE。
