@@ -10,3 +10,6 @@ tags:
 dependencies:
   idf:
     version: '==6.1.0'
+files:
+  exclude:
+    - "**/.git"
