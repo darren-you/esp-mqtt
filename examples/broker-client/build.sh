@@ -44,7 +44,7 @@ idf.py -C "$repo_root/examples/broker-client" -B "$build_root/build" \
   -D SDKCONFIG="$build_root/sdkconfig" \
   -D IDF_TARGET="$target" \
   -D ESP_MQTT_COMPONENT_DIR="$build_root/mqtt" \
-  -D EMQTT_SAMPLE_INPUTS="${EMQTT_SAMPLE_INPUTS:-$repo_root/examples/broker-client/inputs.example.h}" build
+  -D EMQTT_SAMPLE_INPUTS="${EMQTT_SAMPLE_INPUTS:-$repo_root/examples/broker-client/inputs_example.h}" build
 if ! grep -Fxq "CONFIG_IDF_TARGET=\"$target\"" "$build_root/sdkconfig" ||
    ! grep -Fxq "$console_option" "$build_root/sdkconfig"; then
   printf 'ESP MQTT Broker 样例\n  结果  失败\n  原因  最终 sdkconfig target 或控制台与请求不符\n' >&2

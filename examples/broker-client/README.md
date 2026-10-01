@@ -16,7 +16,7 @@ flowchart LR
     loopback["lab-broker-loopback.sh：主机 TLS 回环自检"] --> mosquitto["隔离 Mosquitto / CLI"]
 ```
 
-复制 `inputs.example.h` 到两个独立的仓外受控路径，分别填入隔离实验环境的 SSID、密码、NTP 主机、Broker DNS 主机、端口、PEM CA、固定 ClientID、可选用户名密码，以及订阅、动态订阅、发布和 LWT Topic。两台的 ClientID、测试 Topic 与 Broker 账户/ACL 须相互隔离，避免同时在线时相互踢出或串收消息；不要填生产凭据或设备持久 UUID。空示例可以编译，但启动后在接入网络前明确拒绝。当前只接受 WPA2 PSK 和 TLS Broker；构建配置拒绝明文实验开关及 PHY 校准 NVS 存储。
+复制 `inputs_example.h` 到两个独立的仓外受控路径，分别填入隔离实验环境的 SSID、密码、NTP 主机、Broker DNS 主机、端口、PEM CA、固定 ClientID、可选用户名密码，以及订阅、动态订阅、发布和 LWT Topic。两台的 ClientID、测试 Topic 与 Broker 账户/ACL 须相互隔离，避免同时在线时相互踢出或串收消息；不要填生产凭据或设备持久 UUID。空示例可以编译，但启动后在接入网络前明确拒绝。当前只接受 WPA2 PSK 和 TLS Broker；构建配置拒绝明文实验开关及 PHY 校准 NVS 存储。
 
 准备[锁定 SDK](../../tools/README.md)并导出 `IDF_PATH` 后，从仓根构建到独立输出目录：
 
