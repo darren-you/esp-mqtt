@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 /* 测试本仓装配与回调生命周期；MQTT 协议行为仍须官方组件 + 真 Broker 实测。 */
 #include "emqtt.h"
+#include "../../runtime/emqtt_receive_internal.h"
 #include "mqtt_client.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -13,21 +14,27 @@ struct fake_queue { unsigned length, item_size, head, count; unsigned char data[
 static unsigned live_queues, queue_attempt, fail_queue_attempt;
 static void *dynamic_allocation;
 static unsigned dynamic_attempts, dynamic_allocations, dynamic_frees;
-static void *message_allocations[4];
+static struct { void *pointer; size_t size; } message_allocations[4];
+static size_t live_message_bytes, last_message_size;
+static bool callback_active;
 static unsigned live_messages;
 static bool fail_next_dynamic;
 static struct { void *pointer; size_t size; } storage_allocations[4];
 static unsigned live_storage, storage_attempt, fail_storage_attempt;
 void *emqtt_test_calloc(size_t count, size_t size)
 {
-    if (count == 1 && size == sizeof(emqtt_message_t)) {
+    if (callback_active) {
+        assert(count == 1 && size >= sizeof(emqtt_owned_message_t));
+        last_message_size = size;
         ++dynamic_attempts;
         if (fail_next_dynamic) { fail_next_dynamic = false; return NULL; }
         assert(live_messages < 4);
         void *message = calloc(count, size);
         if (message) {
             if (live_messages == 3) dynamic_allocation = message;
-            message_allocations[live_messages++] = message;
+            message_allocations[live_messages].pointer = message;
+            message_allocations[live_messages++].size = size;
+            live_message_bytes += size;
             ++dynamic_allocations;
         }
         return message;
@@ -54,12 +61,13 @@ void emqtt_test_free(void *pointer)
         }
     }
     for (unsigned i = 0; i < live_messages; ++i) {
-        if (message_allocations[i] == pointer) {
+        if (message_allocations[i].pointer == pointer) {
             const unsigned char *bytes = pointer;
-            for (size_t j = 0; j < sizeof(emqtt_message_t); ++j) assert(bytes[j] == 0);
+            for (size_t j = 0; j < message_allocations[i].size; ++j) assert(bytes[j] == 0);
+            live_message_bytes -= message_allocations[i].size;
             if (pointer == dynamic_allocation) dynamic_allocation = NULL;
             message_allocations[i] = message_allocations[--live_messages];
-            message_allocations[live_messages] = NULL;
+            message_allocations[live_messages].pointer = NULL;
             ++dynamic_frees;
             break;
         }
@@ -98,7 +106,7 @@ static struct esp_mqtt_client sdk;
 static esp_mqtt_client_config_t configured;
 static esp_event_handler_t callback;
 static void *callback_arg;
-static bool callback_active, init_fail, live_client;
+static bool init_fail, live_client;
 static int destroy_error;
 static int register_error, start_error, stop_error, enqueue_result = 41, subscribe_result = 31, unsubscribe_result = 32;
 static unsigned stop_calls, subscriptions, enqueues;
@@ -259,6 +267,80 @@ int main(void)
     assert(emqtt_start(r, true, true) == ESP_OK);
     current_task = 2; assert(emqtt_stop(r) == ESP_ERR_INVALID_STATE); current_task = 1;
     connect_ready(r);
+    /* Exact allocation follows total length, not fragment length; public ABI
+     * still delivers the full message with zero bytes beyond its payload. */
+    static char sized_payload[EMQTT_PAYLOAD_MAX];
+    for (size_t i = 0; i < sizeof sized_payload; ++i) sized_payload[i] = (char)(i * 17U);
+    const size_t lengths[] = {0, 1, 127, 1024, EMQTT_PAYLOAD_MAX};
+    for (size_t i = 0; i < sizeof lengths / sizeof lengths[0]; ++i) {
+        const int length = (int)lengths[i];
+        const int first = length > 1 ? length / 2 : length;
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 200 + (int)i,
+            .topic = "unit/sized", .topic_len = 10, .data = sized_payload,
+            .data_len = first, .total_data_len = length, .qos = 1, .retain = true, .dup = true});
+        assert(live_messages == 1 && last_message_size == sizeof(emqtt_owned_message_t) + lengths[i]);
+        assert(live_message_bytes == last_message_size);
+        if (first < length) {
+            assert(!emqtt_poll(r, &output));
+            emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 200 + (int)i,
+                .data = sized_payload + first, .data_len = length - first,
+                .total_data_len = length, .current_data_offset = first,
+                .qos = 1, .retain = true, .dup = true});
+        }
+        assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE);
+        assert(output.message.length == lengths[i] && output.message.message_id == 200 + (int)i &&
+               output.message.qos == 1 && output.message.retain && output.message.duplicate);
+        assert(!strcmp(output.message.topic, "unit/sized"));
+        assert(!memcmp(output.message.payload, sized_payload, lengths[i]));
+        for (size_t j = lengths[i]; j < sizeof output.message.payload; ++j) assert(!output.message.payload[j]);
+        assert(!live_message_bytes && !live_messages);
+    }
+    /* Keep the complete legal peak: three maximum messages plus a fourth
+     * in-flight maximum message, with no capacity growth on continuation. */
+    for (int i = 0; i < 3; ++i)
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 220 + i, .topic = "unit/full", .topic_len = 9,
+            .data = sized_payload, .data_len = EMQTT_PAYLOAD_MAX,
+            .total_data_len = EMQTT_PAYLOAD_MAX, .qos = 1});
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 223, .topic = "unit/full", .topic_len = 9,
+        .data = sized_payload, .data_len = EMQTT_PAYLOAD_MAX / 2,
+        .total_data_len = EMQTT_PAYLOAD_MAX, .qos = 1});
+    assert(live_messages == 4 && dynamic_allocation &&
+           live_message_bytes == 4U * (sizeof(emqtt_owned_message_t) + EMQTT_PAYLOAD_MAX));
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE && output.message.message_id == 220);
+    assert(!memcmp(output.message.payload, sized_payload, EMQTT_PAYLOAD_MAX));
+    const unsigned before_continuation = dynamic_attempts;
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 223,
+        .data = sized_payload + EMQTT_PAYLOAD_MAX / 2, .data_len = EMQTT_PAYLOAD_MAX / 2,
+        .total_data_len = EMQTT_PAYLOAD_MAX, .current_data_offset = EMQTT_PAYLOAD_MAX / 2, .qos = 1});
+    assert(dynamic_attempts == before_continuation && live_messages == 3);
+    for (int i = 1; i < 4; ++i) {
+        assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE &&
+               output.message.length == EMQTT_PAYLOAD_MAX && output.message.message_id == 220 + i);
+        assert(!memcmp(output.message.payload, sized_payload, EMQTT_PAYLOAD_MAX));
+    }
+    assert(!live_messages && !live_message_bytes && !dynamic_allocation);
+    /* Impossible declarations never allocate or consume a queue slot. */
+    const unsigned before_invalid = dynamic_attempts;
+    for (int length = -1; length <= (int)EMQTT_PAYLOAD_MAX + 1; length += (int)EMQTT_PAYLOAD_MAX + 2) {
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.topic = "unit/in", .topic_len = 7,
+            .data = "x", .data_len = 1, .total_data_len = length});
+        assert(emqtt_poll(r, &output) && output.error == EMQTT_ERROR_FRAGMENT);
+        assert(dynamic_attempts == before_invalid && !live_messages);
+    }
+    /* A changed declaration cannot resize an in-flight owner or change the
+     * size used for wiping it, whether it grows or shrinks. */
+    for (int changed = 1; changed <= 3; changed += 2) {
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 210, .topic = "unit/in", .topic_len = 7,
+            .data = "a", .data_len = 1, .total_data_len = 2, .qos = 1});
+        assert(live_message_bytes == sizeof(emqtt_owned_message_t) + 2U);
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 210, .data = "b", .data_len = 1,
+            .total_data_len = changed, .current_data_offset = 1, .qos = 1});
+        assert(emqtt_poll(r, &output) && output.error == EMQTT_ERROR_FRAGMENT && !live_messages);
+    }
+    /* Invalid first metadata still clears the complete allocated owner. */
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 211, .topic = "unit/#", .topic_len = 6,
+        .data = "a", .data_len = 1, .total_data_len = 127, .qos = 1});
+    assert(emqtt_poll(r, &output) && output.error == EMQTT_ERROR_FRAGMENT && !live_messages);
     /* 公共消息是整结构副本：复用槽后不能携带上一条消息的残留字节。 */
     char private_topic[] = "unit/private";
     char private_payload[] = "private-data";
@@ -622,7 +704,7 @@ int main(void)
     }
     assert(stop_calls > 200 && enqueues == 4);
     assert(!dynamic_allocation && live_messages == 0 && dynamic_allocations == dynamic_frees);
-    assert(live_storage == 0);
+    assert(live_storage == 0 && live_message_bytes == 0);
     puts("  mqtt_runtime   passed (SDK event injection; not Broker/hardware acceptance)");
     return 0;
 }

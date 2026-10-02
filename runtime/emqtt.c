@@ -468,7 +468,7 @@ bool emqtt_poll(emqtt_runtime_t *r, emqtt_event_t *out)
         clear_pending(r);
         r->state = EMQTT_DISCONNECTED;
         break;
-    case EMQTT_EVENT_MESSAGE:
+    case EMQTT_EVENT_MESSAGE: {
         /* out was fully cleared above; unused public payload bytes stay zero. */
         const emqtt_owned_message_t *message = r->messages[n.slot];
         memcpy(out->message.topic, message->info.topic, sizeof out->message.topic);
@@ -478,6 +478,7 @@ bool emqtt_poll(emqtt_runtime_t *r, emqtt_event_t *out)
         out->message.duplicate = message->info.duplicate;
         release_message_slot(r, n.slot);
         break;
+    }
     case EMQTT_EVENT_ERROR:
         if (n.error == EMQTT_ERROR_SUBSCRIPTION) fail_closed(r);
         else if (n.error != EMQTT_ERROR_FRAGMENT) r->state = EMQTT_FAILED;
