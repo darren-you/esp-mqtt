@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "emqtt_contract.h"
+#include "emqtt_receive_internal.h"
 #include <string.h>
 
 static size_t bounded_length(const char *text, size_t capacity)
@@ -90,40 +91,24 @@ void emqtt_receive_reset(emqtt_receiver_t *receiver)
 emqtt_rx_result_t emqtt_receive(emqtt_receiver_t *r, const emqtt_fragment_t *f)
 {
     if (!r) return EMQTT_RX_REJECTED;
-    if (!r->message) goto reject;
+    if (!r->message) { emqtt_receive_reset(r); return EMQTT_RX_REJECTED; }
     emqtt_message_t *message = r->message;
-    if (!f || f->topic_length < 0 || f->data_length < 0 || f->total_length < 0 || f->offset < 0 ||
-        f->total_length > (int)EMQTT_PAYLOAD_MAX || f->offset > f->total_length ||
-        f->data_length > f->total_length - f->offset || (f->data_length && !f->data) ||
-        f->qos < 0 || f->qos > 1 || f->message_id < 0 || f->message_id > 65535 ||
-        (f->qos == 1 && f->message_id == 0) || (f->qos == 0 && f->message_id != 0)) goto reject;
-    if (!r->active) {
-        if (f->offset || !emqtt_topic_valid(f->topic, (size_t)f->topic_length, false)) goto reject;
-        memcpy(message->topic, f->topic, (size_t)f->topic_length);
-        message->topic[f->topic_length] = '\0';
-        message->length = (size_t)f->total_length;
-        message->message_id = f->message_id;
-        message->qos = (uint8_t)f->qos;
-        message->retain = f->retain;
-        message->duplicate = f->duplicate;
-        r->received = 0;
-        r->active = true;
-    } else if (f->topic_length && (!f->topic || (size_t)f->topic_length != strlen(message->topic) ||
-               memcmp(f->topic, message->topic, (size_t)f->topic_length))) goto reject;
-    if ((size_t)f->offset != r->received || (size_t)f->total_length != message->length ||
-        f->message_id != message->message_id || f->qos != message->qos ||
-        f->retain != message->retain || f->duplicate != message->duplicate ||
-        (f->data_length == 0 && f->offset != 0)) goto reject;
-    if (f->data_length) memcpy(message->payload + r->received, f->data, (size_t)f->data_length);
-    r->received += (size_t)f->data_length;
-    if (r->received == message->length) {
-        r->active = false;
-        return EMQTT_RX_COMPLETE;
+    emqtt_message_info_t info = {0};
+    if (r->active) {
+        memcpy(info.topic, message->topic, sizeof info.topic);
+        info.length = message->length; info.message_id = message->message_id;
+        info.qos = message->qos; info.retain = message->retain; info.duplicate = message->duplicate;
     }
-    return EMQTT_RX_MORE;
-reject:
-    emqtt_receive_reset(r);
-    return EMQTT_RX_REJECTED;
+    emqtt_receive_state_t state = {.received = r->received, .active = r->active};
+    const emqtt_rx_result_t result = emqtt_receive_into(&state, &info,
+        message->payload, sizeof message->payload, f);
+    r->received = state.received; r->active = state.active;
+    if (result != EMQTT_RX_REJECTED) {
+        memcpy(message->topic, info.topic, sizeof message->topic);
+        message->length = info.length; message->message_id = info.message_id;
+        message->qos = info.qos; message->retain = info.retain; message->duplicate = info.duplicate;
+    }
+    return result;
 }
 
 bool emqtt_suback_valid(const uint8_t *codes, size_t count,

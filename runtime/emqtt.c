@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "emqtt.h"
+#include "emqtt_receive_internal.h"
 #include "mqtt_client.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -55,11 +56,12 @@ struct emqtt_runtime {
     size_t ca_size_bytes;
     emqtt_subscription_t subscriptions[EMQTT_SUBSCRIPTIONS_MAX];
     size_t subscription_count;
-    emqtt_receiver_t receiver;
+    emqtt_receive_state_t receiver;
+    emqtt_owned_message_t *receiver_message;
     int receiver_slot;
     /* Queue slots bound the number of complete messages; payload storage only
      * exists from the first DATA fragment until poll, stop, or rejection. */
-    emqtt_message_t *messages[MESSAGE_SLOTS];
+    emqtt_owned_message_t *messages[MESSAGE_SLOTS];
     atomic_bool overflow;
     bool started;
     bool faulted;
@@ -99,11 +101,12 @@ static bool owned(const emqtt_runtime_t *r)
     return r && r == s_instance && r->owner == xTaskGetCurrentTaskHandle();
 }
 
-static void release_dynamic_message(emqtt_message_t *message)
+static void release_dynamic_message(emqtt_owned_message_t *message)
 {
     if (!message) return;
     volatile unsigned char *bytes = (volatile unsigned char *)message;
-    for (size_t i = 0; i < sizeof(*message); ++i) bytes[i] = 0;
+    const size_t size = sizeof(*message) + message->info.length;
+    for (size_t i = 0; i < size; ++i) bytes[i] = 0;
     free(message);
 }
 
@@ -135,10 +138,10 @@ static void clear_pending(emqtt_runtime_t *r)
 static void release_receiver_slot(emqtt_runtime_t *r)
 {
     const int slot = r->receiver_slot;
-    emqtt_message_t *message = r->receiver.message;
+    emqtt_owned_message_t *message = r->receiver_message;
     r->receiver_slot = -1;
-    emqtt_receive_reset(&r->receiver);
-    r->receiver.message = NULL;
+    r->receiver.active = false; r->receiver.received = 0;
+    r->receiver_message = NULL;
     release_dynamic_message(message);
     if (slot >= 0 && xQueueSend(r->free_slots, &slot, 0) != pdTRUE)
         atomic_store(&r->overflow, true);
@@ -190,24 +193,34 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         }
         break;
     case MQTT_EVENT_DATA: {
-        if (!r->receiver.message) {
+        if (!r->receiver_message) {
+            /* Reject a malformed declared size before it can drive allocation.
+             * An existing receiver is rejected by the same fragment core. */
+            if (event->total_data_len < 0 || event->total_data_len > (int)EMQTT_PAYLOAD_MAX) {
+                n.kind = EMQTT_EVENT_ERROR; n.error = EMQTT_ERROR_FRAGMENT;
+                break;
+            }
             if (xQueueReceive(r->free_slots, &r->receiver_slot, 0) != pdTRUE) {
                 r->receiver_slot = -1;
             }
-            r->receiver.message = emqtt_storage_calloc(sizeof(*r->receiver.message));
-            if (!r->receiver.message) {
+            const size_t length = (size_t)event->total_data_len;
+            r->receiver_message = emqtt_storage_calloc(sizeof(*r->receiver_message) + length);
+            if (!r->receiver_message) {
                 if (r->receiver_slot >= 0)
                     (void)xQueueSend(r->free_slots, &r->receiver_slot, 0);
                 r->receiver_slot = -1;
                 atomic_store(&r->overflow, true);
                 return;
             }
+            r->receiver_message->info.length = length;
         }
         const emqtt_fragment_t fragment = {.topic = event->topic, .topic_length = event->topic_len,
             .data = event->data, .data_length = event->data_len, .total_length = event->total_data_len,
             .offset = event->current_data_offset, .message_id = event->msg_id, .qos = event->qos,
             .retain = event->retain, .duplicate = event->dup};
-        const emqtt_rx_result_t result = emqtt_receive(&r->receiver, &fragment);
+        const emqtt_rx_result_t result = emqtt_receive_into(&r->receiver,
+            &r->receiver_message->info, r->receiver_message->payload,
+            r->receiver_message->info.length, &fragment);
         if (result == EMQTT_RX_MORE) return;
         if (result == EMQTT_RX_REJECTED) {
             release_receiver_slot(r);
@@ -224,9 +237,9 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
                 n.slot = r->receiver_slot;
             }
             /* Transfer the completed buffer to the bounded owner queue. */
-            r->messages[n.slot] = r->receiver.message;
+            r->messages[n.slot] = r->receiver_message;
             r->receiver_slot = -1;
-            r->receiver.message = NULL;
+            r->receiver_message = NULL;
             n.kind = EMQTT_EVENT_MESSAGE;
         }
         break;
@@ -456,7 +469,13 @@ bool emqtt_poll(emqtt_runtime_t *r, emqtt_event_t *out)
         r->state = EMQTT_DISCONNECTED;
         break;
     case EMQTT_EVENT_MESSAGE:
-        out->message = *r->messages[n.slot];
+        /* out was fully cleared above; unused public payload bytes stay zero. */
+        const emqtt_owned_message_t *message = r->messages[n.slot];
+        memcpy(out->message.topic, message->info.topic, sizeof out->message.topic);
+        memcpy(out->message.payload, message->payload, message->info.length);
+        out->message.length = message->info.length; out->message.message_id = message->info.message_id;
+        out->message.qos = message->info.qos; out->message.retain = message->info.retain;
+        out->message.duplicate = message->info.duplicate;
         release_message_slot(r, n.slot);
         break;
     case EMQTT_EVENT_ERROR:
