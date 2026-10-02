@@ -47,7 +47,14 @@ struct emqtt_runtime {
     esp_mqtt_client_handle_t client;
     TaskHandle_t owner;
     QueueHandle_t notices, free_slots;
-    emqtt_config_t config;
+    /* The SDK owns copies of endpoint, credentials and will. Its CA pointer
+     * remains borrowed across reconnect, so retain only that owned PEM plus
+     * the desired subscription list and trusted-time policy. */
+    bool tls;
+    char *ca_pem;
+    size_t ca_size_bytes;
+    emqtt_subscription_t subscriptions[EMQTT_SUBSCRIPTIONS_MAX];
+    size_t subscription_count;
     emqtt_receiver_t receiver;
     int receiver_slot;
     /* Queue slots bound the number of complete messages; payload storage only
@@ -74,6 +81,17 @@ static void *emqtt_storage_calloc(size_t size)
 #else
     return calloc(1, size);
 #endif
+}
+
+static void release_ca(emqtt_runtime_t *r)
+{
+    if (r->ca_pem) {
+        volatile unsigned char *bytes = (volatile unsigned char *)r->ca_pem;
+        for (size_t i = 0; i < r->ca_size_bytes; ++i) bytes[i] = 0;
+    }
+    free(r->ca_pem);
+    r->ca_pem = NULL;
+    r->ca_size_bytes = 0U;
 }
 
 static bool owned(const emqtt_runtime_t *r)
@@ -250,8 +268,17 @@ esp_err_t emqtt_create(const emqtt_config_t *config, emqtt_runtime_t **out)
     emqtt_runtime_t *r = emqtt_storage_calloc(sizeof(*r));
     if (!r) return ESP_ERR_NO_MEM;
     r->owner = xTaskGetCurrentTaskHandle();
-    r->config = *config;
     esp_err_t failure = ESP_ERR_NO_MEM;
+    r->tls = config->tls;
+    r->subscription_count = config->subscription_count;
+    memcpy(r->subscriptions, config->subscriptions,
+           config->subscription_count * sizeof r->subscriptions[0]);
+    if (config->tls) {
+        r->ca_size_bytes = strlen(config->ca_pem) + 1U;
+        r->ca_pem = emqtt_storage_calloc(r->ca_size_bytes);
+        if (!r->ca_pem) goto fail;
+        memcpy(r->ca_pem, config->ca_pem, r->ca_size_bytes);
+    }
     atomic_init(&r->overflow, false);
     r->receiver_slot = -1;
     r->notices = xQueueCreate(NOTICE_CAPACITY, sizeof(notice_t));
@@ -259,17 +286,17 @@ esp_err_t emqtt_create(const emqtt_config_t *config, emqtt_runtime_t **out)
     if (!r->notices || !r->free_slots) goto fail;
     drain(r);
     const esp_mqtt_client_config_t official = {
-        .broker.address = {.hostname = r->config.hostname, .port = config->port,
+        .broker.address = {.hostname = config->hostname, .port = config->port,
             .transport = config->tls ? MQTT_TRANSPORT_OVER_SSL : MQTT_TRANSPORT_OVER_TCP},
-        .broker.verification = {.certificate = config->tls ? r->config.ca_pem : NULL,
+        .broker.verification = {.certificate = config->tls ? r->ca_pem : NULL,
             .skip_cert_common_name_check = false},
-        .credentials = {.client_id = r->config.client_id,
-            .username = config->username[0] ? r->config.username : NULL,
-            .authentication.password = config->username[0] ? r->config.password : NULL},
+        .credentials = {.client_id = config->client_id,
+            .username = config->username[0] ? config->username : NULL,
+            .authentication.password = config->username[0] ? config->password : NULL},
         .session = {.protocol_ver = MQTT_PROTOCOL_V_3_1_1, .disable_clean_session = false,
             .keepalive = 30, .message_retransmit_timeout = 5000,
-            .last_will = {.topic = r->config.will_topic,
-                .msg = config->will_length ? (const char *)r->config.will_payload : "",
+            .last_will = {.topic = config->will_topic,
+                .msg = config->will_length ? (const char *)config->will_payload : "",
                 .msg_len = (int)config->will_length, .qos = config->will_qos, .retain = config->will_retain}},
         .network = {.reconnect_timeout_ms = 2000, .timeout_ms = 3000, .disable_auto_reconnect = false},
         .task = {.priority = 5, .stack_size = 6144},
@@ -288,6 +315,7 @@ fail:
     if (r->client) esp_mqtt_client_destroy(r->client);
     if (r->notices) vQueueDelete(r->notices);
     if (r->free_slots) vQueueDelete(r->free_slots);
+    release_ca(r);
     volatile unsigned char *bytes = (volatile unsigned char *)r;
     for (size_t i = 0; i < sizeof(*r); ++i) bytes[i] = 0;
     free(r);
@@ -297,7 +325,7 @@ fail:
 esp_err_t emqtt_start(emqtt_runtime_t *r, bool network_ready, bool trusted_time_ready)
 {
     if (!owned(r) || r->started || !network_ready) return ESP_ERR_INVALID_STATE;
-    if (r->config.tls && !trusted_time_ready) return ESP_ERR_EMQTT_TIME_REQUIRED;
+    if (r->tls && !trusted_time_ready) return ESP_ERR_EMQTT_TIME_REQUIRED;
     drain(r);
     const esp_err_t error = esp_mqtt_client_start(r->client);
     if (error != ESP_OK) { r->state = EMQTT_FAILED; return error; }
@@ -328,6 +356,7 @@ esp_err_t emqtt_destroy(emqtt_runtime_t *r)
     if (error != ESP_OK) return error;
     vQueueDelete(r->notices);
     vQueueDelete(r->free_slots);
+    release_ca(r);
     /* volatile 防止释放前凭据清除被优化掉。 */
     volatile unsigned char *bytes = (volatile unsigned char *)r;
     for (size_t i = 0; i < sizeof(*r); ++i) bytes[i] = 0;
@@ -391,21 +420,21 @@ bool emqtt_poll(emqtt_runtime_t *r, emqtt_event_t *out)
     switch (n.kind) {
     case EMQTT_EVENT_CONNECTED:
         clear_pending(r);
-        if (submit_subscriptions(r, r->config.subscriptions, r->config.subscription_count, false) != ESP_OK) {
+        if (submit_subscriptions(r, r->subscriptions, r->subscription_count, false) != ESP_OK) {
             fail_closed(r); out->kind = EMQTT_EVENT_ERROR; out->error = EMQTT_ERROR_SUBSCRIPTION;
         }
-        else if (!r->config.subscription_count) out->kind = EMQTT_EVENT_READY;
+        else if (!r->subscription_count) out->kind = EMQTT_EVENT_READY;
         break;
     case NOTICE_SUBACK:
         if (r->pending_subscribe <= 0 || n.message_id != r->pending_subscribe || r->state != EMQTT_SUBSCRIBING ||
             n.error != EMQTT_ERROR_NONE ||
             !emqtt_suback_valid(n.suback, n.suback_count,
-                r->pending_dynamic_subscribe ? &r->pending_subscription : r->config.subscriptions,
+                r->pending_dynamic_subscribe ? &r->pending_subscription : r->subscriptions,
                 r->pending_subscribe_count)) {
             fail_closed(r); out->kind = EMQTT_EVENT_ERROR; out->error = EMQTT_ERROR_SUBSCRIPTION;
         } else {
             if (r->pending_dynamic_subscribe)
-                r->config.subscriptions[r->config.subscription_count++] = r->pending_subscription;
+                r->subscriptions[r->subscription_count++] = r->pending_subscription;
             r->state = EMQTT_READY; out->kind = EMQTT_EVENT_READY;
         }
         clear_pending(r);
@@ -414,10 +443,10 @@ bool emqtt_poll(emqtt_runtime_t *r, emqtt_event_t *out)
         if (r->pending_unsubscribe <= 0 || n.message_id != r->pending_unsubscribe || r->state != EMQTT_SUBSCRIBING) {
             fail_closed(r); out->kind = EMQTT_EVENT_ERROR; out->error = EMQTT_ERROR_SUBSCRIPTION;
         } else {
-            memmove(r->config.subscriptions + r->pending_unsubscribe_index,
-                    r->config.subscriptions + r->pending_unsubscribe_index + 1,
-                    (r->config.subscription_count - r->pending_unsubscribe_index - 1) * sizeof(r->config.subscriptions[0]));
-            --r->config.subscription_count;
+            memmove(r->subscriptions + r->pending_unsubscribe_index,
+                    r->subscriptions + r->pending_unsubscribe_index + 1,
+                    (r->subscription_count - r->pending_unsubscribe_index - 1) * sizeof(r->subscriptions[0]));
+            --r->subscription_count;
             r->state = EMQTT_READY;
         }
         clear_pending(r);
@@ -461,9 +490,9 @@ esp_err_t emqtt_subscribe(emqtt_runtime_t *r, const char *filter, uint8_t qos)
 {
     if (!owned(r) || r->state != EMQTT_READY) return ESP_ERR_INVALID_STATE;
     if (!filter || qos > 1 || !emqtt_topic_valid(filter, strnlen(filter, EMQTT_TOPIC_MAX + 1), true) ||
-        r->config.subscription_count == EMQTT_SUBSCRIPTIONS_MAX) return ESP_ERR_INVALID_ARG;
-    for (size_t i = 0; i < r->config.subscription_count; ++i)
-        if (!strcmp(filter, r->config.subscriptions[i].topic)) return ESP_ERR_INVALID_ARG;
+        r->subscription_count == EMQTT_SUBSCRIPTIONS_MAX) return ESP_ERR_INVALID_ARG;
+    for (size_t i = 0; i < r->subscription_count; ++i)
+        if (!strcmp(filter, r->subscriptions[i].topic)) return ESP_ERR_INVALID_ARG;
     emqtt_subscription_t *sub = &r->pending_subscription;
     strcpy(sub->topic, filter); sub->qos = qos;
     /* 只订阅新增项，避免重新订阅旧项触发无关 retained 消息再次交付。 */
@@ -477,8 +506,8 @@ esp_err_t emqtt_unsubscribe(emqtt_runtime_t *r, const char *filter)
     if (!owned(r) || r->state != EMQTT_READY) return ESP_ERR_INVALID_STATE;
     if (!filter || !emqtt_topic_valid(filter, strnlen(filter, EMQTT_TOPIC_MAX + 1), true)) return ESP_ERR_INVALID_ARG;
     size_t index = 0;
-    while (index < r->config.subscription_count && strcmp(filter, r->config.subscriptions[index].topic)) ++index;
-    if (index == r->config.subscription_count) return ESP_ERR_INVALID_ARG;
+    while (index < r->subscription_count && strcmp(filter, r->subscriptions[index].topic)) ++index;
+    if (index == r->subscription_count) return ESP_ERR_INVALID_ARG;
     const int id = esp_mqtt_client_unsubscribe(r->client, filter);
     if (id <= 0) { fail_closed(r); return id == 0 ? ESP_FAIL : api_result(id); }
     r->pending_unsubscribe = id;

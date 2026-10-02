@@ -16,6 +16,8 @@ static unsigned dynamic_attempts, dynamic_allocations, dynamic_frees;
 static void *message_allocations[4];
 static unsigned live_messages;
 static bool fail_next_dynamic;
+static struct { void *pointer; size_t size; } storage_allocations[4];
+static unsigned live_storage, storage_attempt, fail_storage_attempt;
 void *emqtt_test_calloc(size_t count, size_t size)
 {
     if (count == 1 && size == sizeof(emqtt_message_t)) {
@@ -30,10 +32,27 @@ void *emqtt_test_calloc(size_t count, size_t size)
         }
         return message;
     }
-    return calloc(count, size);
+    ++storage_attempt;
+    if (storage_attempt == fail_storage_attempt) return NULL;
+    void *storage = calloc(count, size);
+    if (storage) {
+        assert(live_storage < 4);
+        storage_allocations[live_storage].pointer = storage;
+        storage_allocations[live_storage++].size = count * size;
+    }
+    return storage;
 }
 void emqtt_test_free(void *pointer)
 {
+    for (unsigned i = 0; i < live_storage; ++i) {
+        if (storage_allocations[i].pointer == pointer) {
+            const unsigned char *bytes = pointer;
+            for (size_t j = 0; j < storage_allocations[i].size; ++j) assert(bytes[j] == 0);
+            storage_allocations[i] = storage_allocations[--live_storage];
+            storage_allocations[live_storage].pointer = NULL;
+            break;
+        }
+    }
     for (unsigned i = 0; i < live_messages; ++i) {
         if (message_allocations[i] == pointer) {
             const unsigned char *bytes = pointer;
@@ -80,6 +99,7 @@ static esp_mqtt_client_config_t configured;
 static esp_event_handler_t callback;
 static void *callback_arg;
 static bool callback_active, init_fail, live_client;
+static int destroy_error;
 static int register_error, start_error, stop_error, enqueue_result = 41, subscribe_result = 31, unsubscribe_result = 32;
 static unsigned stop_calls, subscriptions, enqueues;
 static int submitted_topic_count;
@@ -89,7 +109,20 @@ static int sent_length, sent_qos;
 esp_mqtt_client_handle_t esp_mqtt_client_init(const esp_mqtt_client_config_t *config)
 {
     assert(!live_client); if (init_fail) return NULL;
-    live_client = true; configured = *config; return &sdk;
+    live_client = true;
+    configured = *config;
+    /* Match the real SDK: strings/will are copied, CA remains borrowed. */
+    configured.broker.address.hostname = strdup(config->broker.address.hostname);
+    configured.credentials.client_id = strdup(config->credentials.client_id);
+    if (config->credentials.username) configured.credentials.username = strdup(config->credentials.username);
+    if (config->credentials.authentication.password) configured.credentials.authentication.password = strdup(config->credentials.authentication.password);
+    configured.session.last_will.topic = strdup(config->session.last_will.topic);
+    const size_t will_size = config->session.last_will.msg_len ? (size_t)config->session.last_will.msg_len : 1U;
+    void *will = malloc(will_size);
+    assert(will);
+    memcpy(will, config->session.last_will.msg, will_size);
+    configured.session.last_will.msg = will;
+    return &sdk;
 }
 esp_err_t esp_mqtt_client_register_event(esp_mqtt_client_handle_t client, esp_mqtt_event_id_t id,
                                         esp_event_handler_t handler, void *arg)
@@ -110,7 +143,15 @@ esp_err_t esp_mqtt_client_stop(esp_mqtt_client_handle_t client)
 }
 esp_err_t esp_mqtt_client_destroy(esp_mqtt_client_handle_t client)
 {
-    assert(client == &sdk && !sdk.started && !callback_active && live_client); live_client = false; return ESP_OK;
+    if (destroy_error) return destroy_error;
+    assert(client == &sdk && !sdk.started && !callback_active && live_client);     free((void *)configured.broker.address.hostname);
+    free((void *)configured.credentials.client_id);
+    free((void *)configured.credentials.username);
+    free((void *)configured.credentials.authentication.password);
+    free((void *)configured.session.last_will.topic);
+    free((void *)configured.session.last_will.msg);
+    memset(&configured, 0, sizeof configured);
+    live_client = false; return ESP_OK;
 }
 int esp_mqtt_client_subscribe_multiple(esp_mqtt_client_handle_t client, const esp_mqtt_topic_t *topics, int count)
 {
@@ -165,6 +206,33 @@ int main(void)
 {
     emqtt_config_t c = config();
     emqtt_runtime_t *r = NULL;
+    /* Both retained allocations can fail before any SDK/queue ownership. */
+    for (unsigned fail = 1; fail <= 2; ++fail) {
+        storage_attempt = 0; fail_storage_attempt = fail;
+        assert(emqtt_create(&c, &r) == ESP_ERR_NO_MEM && !r);
+        assert(!live_storage && !live_queues && !live_client);
+    }
+    fail_storage_attempt = 0;
+    /* Synthetic maximum PEM tests owned bytes, not certificate validity. */
+    emqtt_config_t maximum = config();
+    const char begin[] = "-----BEGIN CERTIFICATE-----";
+    const char end[] = "-----END CERTIFICATE-----";
+    memset(maximum.ca_pem, 'A', EMQTT_CA_MAX);
+    memcpy(maximum.ca_pem, begin, sizeof begin - 1U);
+    memcpy(maximum.ca_pem + EMQTT_CA_MAX - (sizeof end - 1U), end, sizeof end - 1U);
+    maximum.ca_pem[EMQTT_CA_MAX] = '\0';
+    assert(emqtt_create(&maximum, &r) == ESP_OK && live_storage == 2);
+    assert(configured.broker.verification.certificate != maximum.ca_pem);
+    assert(strlen(configured.broker.verification.certificate) == EMQTT_CA_MAX);
+    memset(&maximum, 0, sizeof maximum);
+    assert(configured.broker.verification.certificate[0] == '-');
+    assert(emqtt_start(r, true, false) == ESP_ERR_EMQTT_TIME_REQUIRED);
+    destroy_error = ESP_FAIL;
+    assert(emqtt_destroy(r) == ESP_FAIL && live_client && live_storage == 2);
+    assert(configured.broker.verification.certificate[0] == '-');
+    destroy_error = 0;
+    assert(emqtt_destroy(r) == ESP_OK && !live_storage && !live_client);
+    r = NULL;
     for (unsigned fail = 1; fail <= 2; ++fail) {
         queue_attempt = 0; fail_queue_attempt = fail;
         assert(emqtt_create(&c, &r) == ESP_ERR_NO_MEM && !r && !live_queues && !live_client);
@@ -181,7 +249,9 @@ int main(void)
     assert(configured.buffer.out_size >= 5 + 8 * (2 + 256 + 1));
     assert(configured.network.reconnect_timeout_ms && !configured.network.disable_auto_reconnect);
     assert(!strcmp(configured.credentials.client_id, c.client_id));
-    c.ca_pem[0] = 'X'; c.password[0] = 'X';
+    c.ca_pem[0] = 'X'; c.password[0] = 'X'; c.hostname[0] = 'X'; c.client_id[0] = 'X';
+    assert(!strcmp(configured.broker.address.hostname, "broker.example.invalid"));
+
     assert(configured.broker.verification.certificate[0] == '-' && configured.credentials.authentication.password[0] == 't');
     assert(emqtt_start(r, false, true) == ESP_ERR_INVALID_STATE);
     assert(emqtt_start(r, true, false) == ESP_ERR_EMQTT_TIME_REQUIRED);
@@ -552,6 +622,7 @@ int main(void)
     }
     assert(stop_calls > 200 && enqueues == 4);
     assert(!dynamic_allocation && live_messages == 0 && dynamic_allocations == dynamic_frees);
+    assert(live_storage == 0);
     puts("  mqtt_runtime   passed (SDK event injection; not Broker/hardware acceptance)");
     return 0;
 }
