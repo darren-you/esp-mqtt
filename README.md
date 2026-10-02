@@ -1,6 +1,6 @@
 # ESP MQTT
 
-组件清单现排除 Git 子模块的 `.git` 定位文件，防止缓存路径改变同一源码 SHA 的制品摘要。官方 Component Manager 的正负控制与跨缓存验证见[组件摘要检查点](docs/verification/component_hash_reproducibility.md)；运行源码与既有 C3 实板证据保持其原始版本边界。
+组件清单现排除 Git 子模块的 `.git` 定位文件，防止缓存路径改变同一源码 SHA 的制品摘要。官方 Component Manager 的正负控制与跨缓存验证见[组件摘要检查点](docs/verification/component-hash-reproducibility.md)；运行源码与既有 C3 实板证据保持其原始版本边界。
 
 `esp-mqtt` 是从官方 ESP-MQTT v1.1.0 固定提交 `1a1e5788a5cf57a0f44a3c6c061407f6c9be1026` 派生的独立 ESP-IDF `mqtt` 组件。官方 MQTT 编解码与 QoS 主体保留上游源码与历史；本仓在断线时精确清理 clean session 未确认的订阅控制报文，并保留 QoS 发布重试。新增通用 `emqtt_` 运行接口负责有界配置、订阅就绪、事件副本、分片重组与生命周期；入站片通常直接写入预留消息槽，三槽占满时为第四条在途消息临时分配一个消息缓冲，[C3 字节账本与验证](docs/verification/c3-low-memory.md)记录常驻申请与动态峰值。上游许可为 Apache-2.0，来源和逐层差异见[来源归属与差异盘点](docs/design/source-provenance.md)。Base 已删除原通用运行层，并在普通固件接入 MQTT owner 与设备命令；C3 已在同一独立实验镜像上完成 30 个网络场景组与 100 次实例销毁重建；Base 的真实业务 ACK、ESP32 同候选矩阵、五能力组合与正式交付仍待完成。
 
@@ -51,8 +51,8 @@ ESP32-C3 与 ESP32-D0WD-V3 分别以 IDF target `esp32c3`、`esp32` 构建，均
 - [入站消息体存活期与资源边界](docs/verification/mqtt-inbound-message-lifetime.md)
 - [来源归属与差异盘点](docs/design/source-provenance.md)
 - [P3-04 本机回归记录](docs/verification/p3-host-regression.md)
-- [C3 Broker 实板检查点](docs/verification/c3_broker_physical_checkpoint.md)
-- [C3 MQTT 实板网络矩阵](docs/verification/c3_mqtt_network_matrix.md)
+- [C3 Broker 实板检查点](docs/verification/c3-broker-physical-checkpoint.md)
+- [C3 MQTT 实板网络矩阵](docs/verification/c3-mqtt-network-matrix.md)
 - [订阅控制报文断线回归](docs/verification/mqtt-control-reconnect-linux.md)
 - [QoS1 ACK 与重投回归](docs/verification/mqtt-qos1-ack-linux.md)
 - [真实核心生命周期与 transport OOM 回归](docs/verification/mqtt-lifecycle-transport-oom.md)
