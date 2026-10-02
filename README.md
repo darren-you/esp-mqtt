@@ -45,7 +45,7 @@ ESP32-C3 与 ESP32-D0WD-V3 分别以 IDF target `esp32c3`、`esp32` 构建，均
 
 入站消息仍最多有三条完整消息等待 owner 取走；消息体从首片到达才分配，`poll` 复制交付或停止／错误清退时擦除并释放。第四条分片可临时持有缓冲，若完成时仍没有空槽则关闭会话。这个存活期收缩减少了连接空闲期占用，但满队列峰值和正式 Base 五能力同存仍需单独测量。
 
-运行对象仅保留运行期间实际需要的 TLS 策略、期望订阅和按实际长度申请的 CA。官方核心在创建时复制地址、身份、凭据及遗嘱，CA 则借用到 client 销毁；运行层在 SDK 销毁成功后清零释放证书。公开 config、八个订阅和消息／outbox 限额保持原值。官方 C3 编译器确认运行对象由 8056 降到 2416 字节，另加实际 CA；软件、双目标编译与实板容量的范围分别见[常驻配置所有权检查点](docs/verification/mqtt_owned_config_checkpoint.md)。
+运行对象仅保留运行期间实际需要的 TLS 策略、期望订阅和按实际长度申请的 CA。官方核心在创建时复制地址、身份、凭据及遗嘱，CA 则借用到 client 销毁；运行层在 SDK 销毁成功后清零释放证书。公开 config、八个订阅和消息／outbox 限额保持原值。官方 C3 编译器确认运行对象由 8056 降到 2416 字节，另加实际 CA；软件、双目标编译与实板容量的范围分别见[常驻配置所有权检查点](docs/verification/mqtt-owned-config-checkpoint.md)。
 
 - [运行层与测试](tests/README.md)
 - [入站消息体存活期与资源边界](docs/verification/mqtt-inbound-message-lifetime.md)
