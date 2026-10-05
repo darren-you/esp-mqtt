@@ -1,6 +1,6 @@
 # MQTT 实际长度消息所有权检查点
 
-2026-10-02，本轮以同步后 MQTT `26fcaff6c347527314b8f48b178e39a1ef8e5d1c` 的部分 WIP 为工作区输入，补齐并核对此前仓外候选的精确 delta。受测运行源码与资源回归已保存并推送至公开 `master@6443b71db761f4d667503f14108687bad5e6b5ee`；三份 runtime 源码及对应 host 测试与冷归档逐文件、逐字节一致。公开头文件保持。Base 已在 `e302e217f617e30749f286992c2b9115d91f6207` 消费该精确提交及官方生成双目标锁；普通／签名完整构建、官方验签、完整 host ASan/UBSan 与实际编译源码核对通过，见[Base 软件消费检查点](../../../esp-base/docs/operations/mqtt_sized_message_owner_consumer_checkpoint.md)。本检查点没有进行设备验证。
+2026-10-02，本轮以同步后 MQTT `26fcaff6c347527314b8f48b178e39a1ef8e5d1c` 的部分 WIP 为工作区输入，补齐并核对此前仓外候选的精确 delta。受测运行源码与资源回归已保存并推送至公开 `master@6443b71db761f4d667503f14108687bad5e6b5ee`；三份 runtime 源码及对应 host 测试与冷归档逐文件、逐字节一致。公开头文件保持。Base 已在 `e302e217f617e30749f286992c2b9115d91f6207` 消费该精确提交及官方生成双目标锁；普通／签名完整构建、官方验签、完整 host ASan/UBSan 与实际编译源码核对通过，见[Base 软件消费检查点](../../../esp-base/docs/operations/mqtt-sized-message-owner-consumer-checkpoint.md)。本检查点没有进行设备验证。
 
 ## 实际修改与不变量
 
