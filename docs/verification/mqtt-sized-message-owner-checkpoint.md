@@ -1,6 +1,6 @@
 # MQTT 实际长度消息所有权检查点
 
-2026-10-02，本轮以同步后 MQTT `26fcaff6c347527314b8f48b178e39a1ef8e5d1c` 的部分 WIP 为工作区输入，补齐并核对此前仓外候选的精确 delta。受测运行源码与资源回归已保存并推送至公开 `master@6443b71db761f4d667503f14108687bad5e6b5ee`；三份 runtime 源码及对应 host 测试与冷归档逐文件、逐字节一致。公开头文件保持。Base 已在 `e302e217f617e30749f286992c2b9115d91f6207` 消费该精确提交及官方生成双目标锁；普通／签名完整构建、官方验签、完整 host ASan/UBSan 与实际编译源码核对通过，见[Base 软件消费检查点](../../../esp-base/docs/operations/mqtt-sized-message-owner-consumer-checkpoint.md)。本检查点没有进行设备验证。
+2026-10-02，本轮以同步后 MQTT `26fcaff6c347527314b8f48b178e39a1ef8e5d1c` 的部分 WIP 为工作区输入，补齐并核对此前仓外候选的精确 delta。受测运行源码与资源回归已保存并推送至公开 `master@6443b71db761f4d667503f14108687bad5e6b5ee`；三份 runtime 源码及对应 host 测试与冷归档逐文件、逐字节一致。公开头文件保持。Base 在 `e302e217f617e30749f286992c2b9115d91f6207` 历史提交中消费该精确版本及官方生成双目标锁，当轮普通／签名完整构建、官方验签、完整 host ASan/UBSan 与实际编译源码核对通过。当前原生固件装配与软件资格见[Base 原生软件检查点](../../../esp-base/docs/operations/native_software_checkpoint.md)。本检查点没有进行设备验证。
 
 ## 实际修改与不变量
 
@@ -35,4 +35,4 @@
 
 软件冷归档 `mqtt_sized_owner_software_evidence.tar.gz` 的 SHA-256 为 `b37c6414f29f5a04d4ade17a8402cecafc8d645cac1ca4a5c28ec5d222e40221`，43 项输入、日志与 SDK 制品的 SHA-256 索引逐项冻结；四文件源码归档 SHA-256 为 `5cab214a9503b99d08317438c46afb4e06852896c84d0e7cd6d203f34411ba20`。当前主树复验的原始日志与上述候选、SDK ELF／map／bin、ABI、编译守卫和旧版失败记录均单独保留。同步停写期间没有回退或覆盖未确认的新源码。
 
-没有触达 C3／ESP32 实板、mac-ci-2、生产 Broker 或 FRPS。Base 精确依赖／原生双目标锁／签名构建及官方验签已完成软件验证；C3 五能力联合复验、实际历史 heap 与连续块／栈、满合法重叠峰值、Flash 最坏成本、掉电、百次整机生命周期、72 小时和生产入口继续开放。P6-03 与五能力总门未通过。
+没有触达 C3／ESP32 实板、mac-ci-2、生产 Broker 或 FRPS。Base 当轮精确依赖、双目标锁、签名构建及官方验签属于软件验证。当前原生业务、MQTT、FRP 与固件 OTA 的双板堆、连续块／栈、满合法重叠峰值、Flash 成本、掉电、百次整机生命周期、72 小时及正式交付按[现役验证计划](../../../esp-base/docs/operations/ota-allocation-diagnostic-checkpoint.md)分别验收，不继承旧组合资格。

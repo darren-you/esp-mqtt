@@ -1,6 +1,6 @@
 # ESP32-C3 MQTT 入站重组内存收敛
 
-本记录只覆盖 `esp-mqtt` 运行层的入站消息重组。使用现有 ESP32-C3／4 MiB 目标；不改变 TLS 验证、QoS、三个待处理消息槽或 4 KiB 最大载荷，也不代表五组件并行、实板或生产 Broker 已验收。
+本记录只覆盖 `esp-mqtt` 运行层的入站消息重组。使用现有 ESP32-C3／4 MiB 目标；不改变 TLS 验证、QoS、三个待处理消息槽或 4 KiB 最大载荷，也不代表Base/MQTT/FRP/OTA 并行、实板或生产 Broker 已验收。
 
 ## 变更与所有权
 
@@ -31,7 +31,7 @@
 | 固定 SDK 的 `tests/c3-smoke/build.sh` | ESP32-C3 编译链接通过，镜像 `0x24d80` B | 空配置 smoke，不建立 Wi-Fi／MQTT／TLS 会话 |
 | `tests/linux-broker/run.sh ... qos1-ack` | `BROKER TEST PASS` | 真实 MQTT 核心与本机 Broker：丢／重复 PUBACK、入站 DUP、断线重投；未使用 TLS 或 C3 实板 |
 
-本项只减少 MQTT 常态内存申请，三槽满时第四条在途期间没有净节省。FRP、OTA、Wi-Fi、Wasm 与 TLS 并行时的可用堆和最大连续块仍须在实际组合中测量；不能把上述常态节省当作完整五能力的容量证明。
+本项只减少 MQTT 常态内存申请，三槽满时第四条在途期间没有净节省。FRP、OTA、Wi-Fi、原生业务与 TLS 并行时的可用堆和最大连续块仍须在实际组合中测量；不能把上述常态节省当作完整原生业务组合的容量证明。
 
 2026-09-24 的[生命周期与峰值复核](mqtt-lifecycle-transport-oom.md)确认运行实例仍为 21,144 B、官方核心句柄仍为 248 B；修复没有新增堆申请。三槽满时第四条在途的运行层申请峰值仍为 25,512 B，不能计作净节省。
 
@@ -41,4 +41,4 @@
 
 隔离工作树的 `bash tests/host/run.sh` 在 ASan／UBSan 下通过；工具 unittest 8/8、串口驱动伪终端 3/3 通过。把同一源码复制到 mac-work-1 的仓外目录，`tools/sdk.py check` 确认 ESP-IDF `578cf89c343e388db43ba1f4ddcd602fedcb763c` 与 lwIP `2758df4cd3666b3b2a5b53830148379326425c0d`，分别用独立 build/sdkconfig 完整构建：C3 app 为 954432 字节、SHA-256 `72b881a2e68bcdbbbd2e2165db5b15ceab6a229c721fabc4c669db0357cdddd8`；ESP32 app 为 900176 字节、SHA-256 `aed0c94bcbf2940770a9d3c3ca976de4082dfb882f1386d7f3045602c8a3ba00`。构建使用空网络输入，未建立 Broker/TLS 会话，也未写任一设备。复制目录不含 `.git`，因此镜像摘要只绑定本次仓外构建输入，不宣称不同路径的位级复现。
 
-这使 C3 低内存修正与双目标样例在单一候选中通过软件门禁；现有 Base 的 MQTT Git pin 未切到本分支，真实两板 Broker/命令 ACK、三槽满峰值和百次资源回收仍按五仓计划的 P3-07/P3-08 验证。
+这使 C3 低内存修正与双目标样例在单一候选中通过软件门禁；现有 Base 的 MQTT Git pin 未切到本分支，真实两板 Broker/命令 ACK、三槽满峰值和百次资源回收仍按现役原生业务与固件 OTA 计划逐项验证。

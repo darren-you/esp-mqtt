@@ -1,6 +1,6 @@
 # 组件摘要跨缓存检查点
 
-2026-10-02，Base 更新 Container／WAMR 的官方依赖解析发现：MQTT 仍使用同一个公开 SHA `a46e209cc98c7b910774dbb77d11b34f79492720`，但新缓存生成的组件摘要与旧锁不同。实际下载的 `test/tools/paho.mqtt.testing/.git` 含指向当前 Git 缓存的定位路径；官方 Component Manager 3.1.2 默认排除 Git 目录内容，却没有排除该普通文件，因此将运行环境路径计入摘要。
+2026-10-02，Base 的官方依赖解析发现：MQTT 仍使用同一个公开 SHA `a46e209cc98c7b910774dbb77d11b34f79492720`，但新缓存生成的组件摘要与旧锁不同。实际下载的 `test/tools/paho.mqtt.testing/.git` 含指向当前 Git 缓存的定位路径；官方 Component Manager 3.1.2 默认排除 Git 目录内容，却没有排除该普通文件，因此将运行环境路径计入摘要。
 
 本仓在事实源 `idf_component.yml` 的 `files.exclude` 中排除 `**/.git`。它只控制组件分发文件集合，保留子模块本身的固定源码、README 与许可；没有修改下载目录、工具源码或 MQTT C 实现。
 
