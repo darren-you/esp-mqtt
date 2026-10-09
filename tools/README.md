@@ -23,6 +23,6 @@ python3 tools/sdk.py check --path "$IDF_PATH"
 python3 -m unittest discover -s tools/tests -p 'test_*.py'
 ```
 
-准备 SDK 需要网络与足够磁盘空间，普通入口完整下载源码；工具链安装另行执行。来源 gitdir 与 common-dir 必须一致，对象目录及对象不能通过符号链接借用仓外存储；linked worktree 被拒绝，正常 absorbed submodule 的 `.git` 定位文件保留。每个递归来源显式检查工作树，不受 `submodule.*.ignore` 配置影响。host 运行层测试不需要 ESP-IDF。硬件构建与刷写属于后续单独验收。
+准备 SDK 需要网络与足够磁盘空间，普通入口完整下载源码；工具链安装另行执行。Git 元数据不能通过符号链接或无绑定定位文件借用另一仓；正常 absorbed submodule 的原生 core.worktree 须绑定当前来源，来源 gitdir 与 common-dir 必须一致，对象目录及对象不能通过符号链接借用仓外存储；linked worktree 被拒绝，正常 absorbed submodule 的 `.git` 定位文件保留。每个递归来源显式检查工作树，不受 `submodule.*.ignore` 配置影响。host 运行层测试不需要 ESP-IDF。硬件构建与刷写属于后续单独验收。
 
 Actions 退出验收还需将本仓 lwIP 锁切到源码退出 PR 合入 `darren-you/esp-lwip` canonical `master` 后的精确 SHA；当前保留原已验证业务修正 `2758df4cd3666b3b2a5b53830148379326425c0d`，不使用未合并任务 head，也不把宿主测试通过当作 SDK、固件或 Broker 全链路验收。
