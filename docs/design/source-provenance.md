@@ -10,7 +10,7 @@
 | ESP-IDF | `fff9895c82d744c7237be8847347bdd1b07c6643`，本轮核对的原 SDK 工作树干净 | 官方 SDK 基线 |
 | esp-lwip | `2758df4cd3666b3b2a5b53830148379326425c0d` | 独立拥有零窗口 ACK 修正；本仓不复制 lwIP 源 |
 
-`tooling/esp-mqtt` 从固定官方提交完整克隆，保留截至该提交的 1076 个上游提交、`v1.1.0` 标签与原 `LICENSE`。第一方提交 `35de71ac9e978b65c2503dbdecb153a272274513` 已推送至公开 `esp-space/esp-mqtt` 的 `master`，官方仓库保留为 `upstream` 远端。上游 Git 测试子模块 `test/tools/paho.mqtt.testing` 尚未初始化，未进入本轮 host 构建。
+`tooling/esp-mqtt` 从固定官方提交完整克隆，保留截至该提交的 1076 个上游提交、`v1.1.0` 标签与原 `LICENSE`。初始迁入时第一方提交 `35de71ac9e978b65c2503dbdecb153a272274513` 已推送至公开 `esp-space/esp-mqtt` 的 `master`，官方仓库保留为 `upstream` 远端。上游 Git 测试子模块 `test/tools/paho.mqtt.testing` 当时尚未初始化，未进入该轮 host 构建。
 
 ## 实际源码差异与归属
 
@@ -35,7 +35,7 @@
 
 本轮读取的原 ESP-IDF checkout 位于固定 `fff9895...`，`git status --short` 为空，内含原 lwIP `c6f2f878e7b0f86033214b85547d579be43351e3`；没有发现 IDF 本体其他源码差异。已准备的独立 SDK 同为固定 IDF 提交，唯一故意工作树差异是 `components/lwip/lwip` 指向公开修正 `2758df4...`。`tools/sdk.py check` 已对这份独立 SDK 通过，组件 CMake 要求同一 SDK 和内建 lwIP 组件路径。此结论只覆盖本轮两份具体 checkout 与 MQTT 相关输入，不声称所有机器的 SDK 都相同。
 
-当前构建锁已切至[公开 ESP-IDF fork](https://github.com/esp-space/esp-idf) `578cf89c343e388db43ba1f4ddcd602fedcb763c`，其父提交 `855937cf9dcee13ee9c423fb0319238cdc8d53fd` 修复 `esp_ota_begin` 擦除失败时的句柄泄漏，新提交修复 `esp_http_client_init` 失败时未加入 transport list 的句柄泄漏；最初的官方基线仍是 `fff9895...`。上段保留 P3a 当时的来源核对记录。当前 SDK 检查还核对 IDF 与 lwIP 的完整提交和唯一 lwIP gitlink 差异。
+原业务修正来源是迁出前 `esp-space/esp-idf@578cf89c343e388db43ba1f4ddcd602fedcb763c`（原来源身份事实），其父提交 `855937cf9dcee13ee9c423fb0319238cdc8d53fd` 修复 `esp_ota_begin` 擦除失败时的句柄泄漏，新提交修复 `esp_http_client_init` 失败时未加入 transport list 的句柄泄漏；最初的官方基线仍是 `fff9895...`。上段保留 P3a 当时的来源核对记录。当前构建锁使用 [受控 ESP-IDF 来源](https://github.com/darren-you/reference-esp-idf/tree/fb53f8a76df5ea913715658f5ac602e91a094e72) `fb53f8a76df5ea913715658f5ac602e91a094e72`，只追加 Actions 退出及实际命中的子来源绑定。SDK 检查核对 IDF 与 lwIP 的完整提交、唯一 lwIP gitlink 差异，并要求根与全部递归依赖具备完整历史和对象。
 
 `esp-base@f3c1e3d34a02d97a88494871f042a3398b2255bb` 已将隔离实验应用的精确 MQTT 依赖升至本仓 `9cac455b0184420353ff0283df3f100abaac3e6b`，并以同一 IDF/lwIP 版本对构建默认与实验 C3 工程。该提交当时尚未在普通固件启用 MQTT；后续 `esp-base@ecf1539` 已接入普通 MQTT owner 与设备命令。
 
