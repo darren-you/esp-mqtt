@@ -58,6 +58,6 @@ ESP32-C3 与 ESP32-D0WD-V3 分别以 IDF target `esp32c3`、`esp32` 构建，均
 - [真实核心生命周期与 transport OOM 回归](docs/verification/mqtt-lifecycle-transport-oom.md)
 - [真实核心 Linux TLS 与证书拒绝回归](docs/verification/mqtt-tls-linux.md)
 - [真实核心百次 Broker 生命周期回归](docs/verification/mqtt-linux-broker-lifecycle-100.md)
-- [ESP 原生业务、FRP OTA 与双目标验证](https://github.com/esp-space/esp-base/blob/master/docs/operations/ota-allocation-diagnostic-checkpoint.md)
+- [ESP 原生业务、FRP OTA 与双目标验证](https://github.com/darren-you/esp-base/blob/master/docs/operations/ota-allocation-diagnostic-checkpoint.md)
 
 CI 检查由 `mac-ci-1` 上 Fast Deploy 的隔离验证任务执行本仓 `bash tools/verify.sh`，源码固定为待审查的完整提交。此入口只运行既有 host／工具合同回归，不能作为 ESP32-C3、ESP32、Broker、固件或实板验收。

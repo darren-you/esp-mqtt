@@ -25,4 +25,4 @@ python3 -m unittest discover -s tools/tests -p 'test_*.py'
 
 准备 SDK 可能下载上游与工具链；本轮仅用已经存在的独立受控 checkout执行 `check`，没有运行 `prepare` 或修改已有 SDK。host 运行层测试不需要 ESP-IDF。硬件构建与刷写属于后续单独验收。
 
-Actions 退出验收还需将本仓 lwIP 锁切到源码退出 PR 合入 `esp-space/esp-lwip` canonical `master` 后的精确 SHA；当前保留原已验证业务修正 `2758df4cd3666b3b2a5b53830148379326425c0d`，不使用未合并任务 head，也不把宿主测试通过当作 SDK、固件或 Broker 全链路验收。
+Actions 退出验收还需将本仓 lwIP 锁切到源码退出 PR 合入 `darren-you/esp-lwip` canonical `master` 后的精确 SHA；当前保留原已验证业务修正 `2758df4cd3666b3b2a5b53830148379326425c0d`，不使用未合并任务 head，也不把宿主测试通过当作 SDK、固件或 Broker 全链路验收。
