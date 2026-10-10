@@ -21,8 +21,14 @@ static unsigned live_messages;
 static bool fail_next_dynamic;
 static struct { void *pointer; size_t size; } storage_allocations[4];
 static unsigned live_storage, storage_attempt, fail_storage_attempt;
+static unsigned critical_depth, outbox_reads;
+static int outbox_bytes = 123;
+static void (*before_message_free)(void);
+void emqtt_test_enter_critical(portMUX_TYPE *mux) { assert(mux && !critical_depth); ++critical_depth; }
+void emqtt_test_exit_critical(portMUX_TYPE *mux) { assert(mux && critical_depth == 1); --critical_depth; }
 void *emqtt_test_calloc(size_t count, size_t size)
 {
+    assert(!critical_depth);
     if (callback_active) {
         assert(count == 1 && size >= sizeof(emqtt_owned_message_t));
         last_message_size = size;
@@ -51,6 +57,7 @@ void *emqtt_test_calloc(size_t count, size_t size)
 }
 void emqtt_test_free(void *pointer)
 {
+    assert(!critical_depth);
     for (unsigned i = 0; i < live_storage; ++i) {
         if (storage_allocations[i].pointer == pointer) {
             const unsigned char *bytes = pointer;
@@ -62,6 +69,7 @@ void emqtt_test_free(void *pointer)
     }
     for (unsigned i = 0; i < live_messages; ++i) {
         if (message_allocations[i].pointer == pointer) {
+            if (before_message_free) { void (*hook)(void) = before_message_free; before_message_free = NULL; hook(); }
             const unsigned char *bytes = pointer;
             for (size_t j = 0; j < message_allocations[i].size; ++j) assert(bytes[j] == 0);
             live_message_bytes -= message_allocations[i].size;
@@ -95,11 +103,12 @@ BaseType_t xQueueReceive(QueueHandle_t q, void *item, TickType_t ticks)
     q->head = (q->head + 1) % q->length; --q->count; return pdTRUE;
 }
 BaseType_t xQueueReset(QueueHandle_t q) { q->head = q->count = 0; return pdTRUE; }
+UBaseType_t uxQueueMessagesWaiting(QueueHandle_t q) { assert(!critical_depth); return q->count; }
 void vQueueDelete(QueueHandle_t q) { assert(live_queues); --live_queues; free(q); }
 static uintptr_t current_task = 1;
 TaskHandle_t xTaskGetCurrentTaskHandle(void) { return (void *)current_task; }
 static int64_t now_us;
-int64_t esp_timer_get_time(void) { return now_us; }
+int64_t esp_timer_get_time(void) { assert(!critical_depth); return now_us; }
 
 struct esp_mqtt_client { bool started; };
 static struct esp_mqtt_client sdk;
@@ -181,7 +190,10 @@ int esp_mqtt_client_enqueue(esp_mqtt_client_handle_t client, const char *topic, 
     assert(client == &sdk && !callback_active && topic && store); (void)retain;
     ++enqueues; sent_data = data; sent_length = length; sent_qos = qos; return enqueue_result;
 }
-int esp_mqtt_client_get_outbox_size(esp_mqtt_client_handle_t client) { assert(client == &sdk); return 123; }
+int esp_mqtt_client_get_outbox_size(esp_mqtt_client_handle_t client)
+{
+    assert(client == &sdk && !critical_depth); ++outbox_reads; return outbox_bytes;
+}
 
 static void emit(esp_mqtt_event_id_t kind, esp_mqtt_event_t event)
 {
@@ -208,6 +220,15 @@ static void connect_ready(emqtt_runtime_t *r)
     emit(MQTT_EVENT_SUBSCRIBED, (esp_mqtt_event_t){.msg_id = subscribe_result, .data = &grant, .data_len = 1});
     assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_READY);
     assert(emqtt_state(r) == EMQTT_READY);
+}
+
+static void partial_during_free(void)
+{
+    /* Inject SDK preemption after detach/wipe, before the allocator releases
+     * the bytes. A snapshot must not dereference or count that former owner. */
+    assert(!callback_active && !critical_depth);
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 400, .topic = "unit/in", .topic_len = 7,
+        .data = "x", .data_len = 1, .total_data_len = EMQTT_PAYLOAD_MAX, .qos = 1});
 }
 
 int main(void)
@@ -301,11 +322,26 @@ int main(void)
         emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 220 + i, .topic = "unit/full", .topic_len = 9,
             .data = sized_payload, .data_len = EMQTT_PAYLOAD_MAX,
             .total_data_len = EMQTT_PAYLOAD_MAX, .qos = 1});
+    outbox_bytes = 14000; now_us += 1000;
     emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 223, .topic = "unit/full", .topic_len = 9,
         .data = sized_payload, .data_len = EMQTT_PAYLOAD_MAX / 2,
         .total_data_len = EMQTT_PAYLOAD_MAX, .qos = 1});
     assert(live_messages == 4 && dynamic_allocation &&
            live_message_bytes == 4U * (sizeof(emqtt_owned_message_t) + EMQTT_PAYLOAD_MAX));
+    emqtt_capacity_stats_t peak;
+    const unsigned reads_before_copy = outbox_reads;
+    assert(emqtt_get_capacity_snapshot(r, &peak) && outbox_reads == reads_before_copy);
+    assert(peak.rx_peak_valid && peak.counters_valid && peak.runtime_instance &&
+           peak.complete_owner_count == 3 && peak.complete_payload_bytes == 3U * EMQTT_PAYLOAD_MAX &&
+           peak.partial_declared_bytes == EMQTT_PAYLOAD_MAX && peak.partial_received_bytes == EMQTT_PAYLOAD_MAX / 2 &&
+           peak.owned_request_bytes == live_message_bytes && peak.outbox_wire_bytes_at_rx_peak == 14000 &&
+           peak.rx_peak_uptime_ms == (uint64_t)now_us / 1000U &&
+           peak.rx_peak_observed_until_uptime_ms == (uint64_t)now_us / 1000U &&
+           peak.owned_message_metadata_bytes == sizeof(emqtt_owned_message_t) &&
+           peak.observation_storage_bytes >= sizeof peak);
+    current_task = 2;
+    assert(!emqtt_get_capacity_snapshot(r, &peak));
+    current_task = 1;
     assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE && output.message.message_id == 220);
     assert(!memcmp(output.message.payload, sized_payload, EMQTT_PAYLOAD_MAX));
     const unsigned before_continuation = dynamic_attempts;
@@ -319,6 +355,16 @@ int main(void)
         assert(!memcmp(output.message.payload, sized_payload, EMQTT_PAYLOAD_MAX));
     }
     assert(!live_messages && !live_message_bytes && !dynamic_allocation);
+    /* A later small RX with a higher outbox does not forge a joint maximum. */
+    outbox_bytes = 16000; now_us += 1000;
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 224, .topic = "unit/in", .topic_len = 7,
+        .data = "x", .data_len = 1, .total_data_len = 2, .qos = 1});
+    assert(emqtt_get_capacity_snapshot(r, &peak) && peak.complete_owner_count == 3 &&
+           peak.outbox_wire_bytes_at_rx_peak == 14000 && peak.partial_received_bytes == EMQTT_PAYLOAD_MAX / 2);
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 224, .data = "y", .data_len = 1,
+        .total_data_len = 2, .current_data_offset = 1, .qos = 1});
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE);
+    outbox_bytes = 123;
     /* Impossible declarations never allocate or consume a queue slot. */
     const unsigned before_invalid = dynamic_attempts;
     for (int length = -1; length <= (int)EMQTT_PAYLOAD_MAX + 1; length += (int)EMQTT_PAYLOAD_MAX + 2) {
@@ -387,8 +433,13 @@ int main(void)
     assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
     int id = -100;
     enqueue_result = -2;
+    const unsigned reads_before_full = outbox_reads;
     assert(emqtt_enqueue(r, "unit/out", "x", 1, 1, false, &id) == ESP_ERR_EMQTT_OUTBOX_FULL && id == -100);
+    assert(emqtt_get_capacity_snapshot(r, &peak) && peak.outbox_full_count == 1 &&
+           peak.last_outbox_full_payload_bytes == 1 &&
+           peak.last_outbox_full_uptime_ms == (uint64_t)now_us / 1000U && outbox_reads == reads_before_full);
     enqueue_result = -1; assert(emqtt_enqueue(r, "unit/out", "x", 1, 1, false, &id) == ESP_FAIL);
+    assert(emqtt_get_capacity_snapshot(r, &peak) && peak.outbox_full_count == 1);
     enqueue_result = 0;
     assert(emqtt_enqueue(r, "unit/out", "not-a-payload", 0, 0, false, &id) == ESP_OK && id == 0);
     assert(sent_data == NULL && sent_length == 0 && sent_qos == 0);
@@ -617,7 +668,11 @@ int main(void)
     assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_ERROR &&
            output.error == EMQTT_ERROR_SUBSCRIPTION && !sdk.started && !dynamic_allocation);
     assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
+    assert(emqtt_get_capacity_snapshot(r, &peak));
+    const uint32_t prior_notice_full_count = peak.notice_full_count;
     for (int i = 0; i < 17; ++i) emit(MQTT_EVENT_PUBLISHED, (esp_mqtt_event_t){.msg_id = i + 1});
+    assert(emqtt_get_capacity_snapshot(r, &peak) && peak.notice_count_high_water == 16 &&
+           peak.notice_full_count == prior_notice_full_count + 1 && peak.counters_valid);
     assert(emqtt_poll(r, &output) && output.error == EMQTT_ERROR_QUEUE && !sdk.started);
     assert(emqtt_start(r, true, true) == ESP_OK);
     stop_error = ESP_FAIL;
@@ -705,6 +760,24 @@ int main(void)
     assert(stop_calls > 200 && enqueues == 4);
     assert(!dynamic_allocation && live_messages == 0 && dynamic_allocations == dynamic_frees);
     assert(live_storage == 0 && live_message_bytes == 0);
+    assert(emqtt_create(&c, &r) == ESP_OK);
+    assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
+    assert(emqtt_get_capacity_snapshot(r, &peak) && !peak.rx_peak_valid && !peak.outbox_full_count);
+    const uint32_t instance = peak.runtime_instance;
+    for (int i = 0; i < 3; ++i)
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 390 + i, .topic = "unit/in", .topic_len = 7,
+            .data = "x", .data_len = 1, .total_data_len = 1, .qos = 1});
+    before_message_free = partial_during_free;
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE && !before_message_free);
+    assert(emqtt_get_capacity_snapshot(r, &peak) && peak.complete_owner_count == 2 &&
+           peak.complete_payload_bytes == 2 && peak.partial_declared_bytes == EMQTT_PAYLOAD_MAX &&
+           peak.owned_request_bytes == 2U + EMQTT_PAYLOAD_MAX + 3U * sizeof(emqtt_owned_message_t));
+    assert(emqtt_stop(r) == ESP_OK && !live_message_bytes && !live_messages);
+    assert(emqtt_get_capacity_snapshot(r, &peak) && peak.rx_peak_valid && peak.runtime_instance == instance);
+    assert(emqtt_destroy(r) == ESP_OK);
+    assert(emqtt_create(&c, &r) == ESP_OK);
+    assert(emqtt_get_capacity_snapshot(r, &peak) && peak.runtime_instance > instance && !peak.rx_peak_valid);
+    assert(emqtt_destroy(r) == ESP_OK && !live_storage && !live_messages && !critical_depth);
     puts("  mqtt_runtime   passed (SDK event injection; not Broker/hardware acceptance)");
     return 0;
 }

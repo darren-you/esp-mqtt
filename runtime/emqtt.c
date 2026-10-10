@@ -7,6 +7,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include <stdatomic.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -71,8 +72,56 @@ struct emqtt_runtime {
     emqtt_subscription_t pending_subscription;
     bool pending_dynamic_subscribe;
     int64_t subscription_deadline_us;
+    portMUX_TYPE capacity_lock;
+    emqtt_capacity_stats_t capacity;
 };
 static emqtt_runtime_t *s_instance;
+static uint32_t s_runtime_instance;
+
+static void capacity_increment(emqtt_capacity_stats_t *stats, uint32_t *counter)
+{
+    if (*counter == UINT32_MAX) stats->counters_valid = false;
+    else ++*counter;
+}
+
+static void capacity_note_partial(emqtt_runtime_t *r)
+{
+    /* DATA is synchronous and the SDK worker holds its recursive API lock.
+     * Take the existing real outbox count before our short resource critical
+     * section. No owner enqueue or worker expiry can change it in this callback. */
+    const int outbox_bytes = esp_mqtt_client_get_outbox_size(r->client);
+    const uint64_t now_ms = (uint64_t)esp_timer_get_time() / 1000U;
+    portENTER_CRITICAL(&r->capacity_lock);
+    uint32_t complete = 0, payload = 0;
+    for (unsigned i = 0; i < MESSAGE_SLOTS; ++i) {
+        if (!r->messages[i]) continue;
+        ++complete;
+        payload += (uint32_t)r->messages[i]->info.length;
+    }
+    const uint32_t declared = (uint32_t)r->receiver_message->info.length;
+    const uint32_t received = (uint32_t)r->receiver.received;
+    const uint32_t bytes = payload + declared + (complete + 1U) * (uint32_t)sizeof(emqtt_owned_message_t);
+    portEXIT_CRITICAL(&r->capacity_lock);
+    /* Bound the actual locked tuple without calling even the clock inside the
+     * resource critical section. The SDK API lock still owns the outbox. */
+    const uint64_t observed_until_ms = (uint64_t)esp_timer_get_time() / 1000U;
+    portENTER_CRITICAL(&r->capacity_lock);
+    if (outbox_bytes < 0) r->capacity.counters_valid = false;
+    else if (!r->capacity.rx_peak_valid || bytes > r->capacity.owned_request_bytes ||
+             (bytes == r->capacity.owned_request_bytes &&
+              (uint32_t)outbox_bytes > r->capacity.outbox_wire_bytes_at_rx_peak)) {
+        r->capacity.rx_peak_uptime_ms = now_ms;
+        r->capacity.rx_peak_observed_until_uptime_ms = observed_until_ms;
+        r->capacity.complete_owner_count = complete;
+        r->capacity.complete_payload_bytes = payload;
+        r->capacity.partial_declared_bytes = declared;
+        r->capacity.partial_received_bytes = received;
+        r->capacity.owned_request_bytes = bytes;
+        r->capacity.outbox_wire_bytes_at_rx_peak = (uint32_t)outbox_bytes;
+        r->capacity.rx_peak_valid = true;
+    }
+    portEXIT_CRITICAL(&r->capacity_lock);
+}
 
 static void *emqtt_storage_calloc(size_t size)
 {
@@ -110,17 +159,33 @@ static void release_dynamic_message(emqtt_owned_message_t *message)
     free(message);
 }
 
+static emqtt_owned_message_t *detach_message_slot(emqtt_runtime_t *r, int slot)
+{
+    portENTER_CRITICAL(&r->capacity_lock);
+    emqtt_owned_message_t *message = r->messages[slot];
+    r->messages[slot] = NULL;
+    portEXIT_CRITICAL(&r->capacity_lock);
+    return message;
+}
+
 static void release_message_slot(emqtt_runtime_t *r, int slot)
 {
-    release_dynamic_message(r->messages[slot]);
-    r->messages[slot] = NULL;
+    release_dynamic_message(detach_message_slot(r, slot));
     if (xQueueSend(r->free_slots, &slot, 0) != pdTRUE)
         atomic_store(&r->overflow, true);
 }
 
 static void post(emqtt_runtime_t *r, const notice_t *notice)
 {
-    if (xQueueSend(r->notices, notice, 0) != pdTRUE) {
+    const bool posted = xQueueSend(r->notices, notice, 0) == pdTRUE;
+    /* This is an actual sampled queue size, possibly below a missed transient
+     * peak. Never infer occupancy from the number of sent events. */
+    const UBaseType_t count = uxQueueMessagesWaiting(r->notices);
+    portENTER_CRITICAL(&r->capacity_lock);
+    if (count > r->capacity.notice_count_high_water) r->capacity.notice_count_high_water = count;
+    if (!posted) capacity_increment(&r->capacity, &r->capacity.notice_full_count);
+    portEXIT_CRITICAL(&r->capacity_lock);
+    if (!posted) {
         if (notice->slot >= 0) release_message_slot(r, notice->slot);
         atomic_store(&r->overflow, true);
     }
@@ -137,11 +202,13 @@ static void clear_pending(emqtt_runtime_t *r)
 
 static void release_receiver_slot(emqtt_runtime_t *r)
 {
+    portENTER_CRITICAL(&r->capacity_lock);
     const int slot = r->receiver_slot;
     emqtt_owned_message_t *message = r->receiver_message;
     r->receiver_slot = -1;
     r->receiver.active = false; r->receiver.received = 0;
     r->receiver_message = NULL;
+    portEXIT_CRITICAL(&r->capacity_lock);
     release_dynamic_message(message);
     if (slot >= 0 && xQueueSend(r->free_slots, &slot, 0) != pdTRUE)
         atomic_store(&r->overflow, true);
@@ -204,15 +271,18 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
                 r->receiver_slot = -1;
             }
             const size_t length = (size_t)event->total_data_len;
-            r->receiver_message = emqtt_storage_calloc(sizeof(*r->receiver_message) + length);
-            if (!r->receiver_message) {
+            emqtt_owned_message_t *message = emqtt_storage_calloc(sizeof(*message) + length);
+            if (!message) {
                 if (r->receiver_slot >= 0)
                     (void)xQueueSend(r->free_slots, &r->receiver_slot, 0);
                 r->receiver_slot = -1;
                 atomic_store(&r->overflow, true);
                 return;
             }
-            r->receiver_message->info.length = length;
+            message->info.length = length;
+            portENTER_CRITICAL(&r->capacity_lock);
+            r->receiver_message = message;
+            portEXIT_CRITICAL(&r->capacity_lock);
         }
         const emqtt_fragment_t fragment = {.topic = event->topic, .topic_length = event->topic_len,
             .data = event->data, .data_length = event->data_len, .total_length = event->total_data_len,
@@ -221,7 +291,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         const emqtt_rx_result_t result = emqtt_receive_into(&r->receiver,
             &r->receiver_message->info, r->receiver_message->payload,
             r->receiver_message->info.length, &fragment);
-        if (result == EMQTT_RX_MORE) return;
+        if (result == EMQTT_RX_MORE) { capacity_note_partial(r); return; }
         if (result == EMQTT_RX_REJECTED) {
             release_receiver_slot(r);
             n.kind = EMQTT_EVENT_ERROR; n.error = EMQTT_ERROR_FRAGMENT;
@@ -237,9 +307,11 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
                 n.slot = r->receiver_slot;
             }
             /* Transfer the completed buffer to the bounded owner queue. */
+            portENTER_CRITICAL(&r->capacity_lock);
             r->messages[n.slot] = r->receiver_message;
             r->receiver_slot = -1;
             r->receiver_message = NULL;
+            portEXIT_CRITICAL(&r->capacity_lock);
             n.kind = EMQTT_EVENT_MESSAGE;
         }
         break;
@@ -255,8 +327,7 @@ static void drain(emqtt_runtime_t *r)
     release_receiver_slot(r);
     xQueueReset(r->notices);
     for (int i = 0; i < MESSAGE_SLOTS; ++i) {
-        release_dynamic_message(r->messages[i]);
-        r->messages[i] = NULL;
+        release_dynamic_message(detach_message_slot(r, i));
     }
     xQueueReset(r->free_slots);
     for (int i = 0; i < MESSAGE_SLOTS; ++i) (void)xQueueSend(r->free_slots, &i, 0);
@@ -280,6 +351,7 @@ esp_err_t emqtt_create(const emqtt_config_t *config, emqtt_runtime_t **out)
     if (s_instance) return ESP_ERR_INVALID_STATE;
     emqtt_runtime_t *r = emqtt_storage_calloc(sizeof(*r));
     if (!r) return ESP_ERR_NO_MEM;
+    portMUX_INITIALIZE(&r->capacity_lock);
     r->owner = xTaskGetCurrentTaskHandle();
     esp_err_t failure = ESP_ERR_NO_MEM;
     r->tls = config->tls;
@@ -321,6 +393,11 @@ esp_err_t emqtt_create(const emqtt_config_t *config, emqtt_runtime_t **out)
     if (!r->client) goto fail;
     failure = esp_mqtt_client_register_event(r->client, MQTT_EVENT_ANY, on_event, r);
     if (failure != ESP_OK) goto fail;
+    r->capacity.counters_valid = s_runtime_instance != UINT32_MAX;
+    if (r->capacity.counters_valid) ++s_runtime_instance;
+    r->capacity.runtime_instance = s_runtime_instance;
+    r->capacity.owned_message_metadata_bytes = sizeof(emqtt_owned_message_t);
+    r->capacity.observation_storage_bytes = sizeof(r->capacity) + sizeof(r->capacity_lock) + sizeof(s_runtime_instance);
     s_instance = r;
     *out = r;
     return ESP_OK;
@@ -502,6 +579,14 @@ esp_err_t emqtt_enqueue(emqtt_runtime_t *r, const char *topic,
     /* 零长度传 NULL：官方 API 对非 NULL/len=0 会隐式 strlen。 */
     const int id = esp_mqtt_client_enqueue(r->client, topic, length ? payload : NULL, (int)length, qos, retain, true);
     const esp_err_t error = api_result(id);
+    if (error == ESP_ERR_EMQTT_OUTBOX_FULL) {
+        const uint64_t now_ms = (uint64_t)esp_timer_get_time() / 1000U;
+        portENTER_CRITICAL(&r->capacity_lock);
+        capacity_increment(&r->capacity, &r->capacity.outbox_full_count);
+        r->capacity.last_outbox_full_payload_bytes = (uint32_t)length;
+        r->capacity.last_outbox_full_uptime_ms = now_ms;
+        portEXIT_CRITICAL(&r->capacity_lock);
+    }
     if (error == ESP_OK) *message_id = id;
     return error;
 }
@@ -540,4 +625,14 @@ esp_err_t emqtt_unsubscribe(emqtt_runtime_t *r, const char *filter)
 int emqtt_outbox_size(const emqtt_runtime_t *r)
 {
     return owned(r) ? esp_mqtt_client_get_outbox_size(r->client) : -1;
+}
+
+bool emqtt_get_capacity_snapshot(const emqtt_runtime_t *r, emqtt_capacity_stats_t *out)
+{
+    if (!owned(r) || !out) return false;
+    portMUX_TYPE *lock = (portMUX_TYPE *)&r->capacity_lock;
+    portENTER_CRITICAL(lock);
+    *out = r->capacity;
+    portEXIT_CRITICAL(lock);
+    return true;
 }
