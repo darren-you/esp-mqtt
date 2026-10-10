@@ -32,8 +32,8 @@ def git_environment() -> dict:
 
 
 def git_command(path: Path, *args: str) -> list[str]:
-    # 原始对象/索引读取也可能调用 fsmonitor；命令行值覆盖全部 Git 配置作用域。
-    return ["git", "-c", "core.fsmonitor=false", "-C", str(path), *args]
+    # 原始对象/索引读取及新仓 fetch 不执行外部监控或 hooks；其余配置仍按实际作用域读取。
+    return ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(path), *args]
 
 
 def reject_external_content_filters(path: Path) -> None:
@@ -64,6 +64,19 @@ def verify_repository_origin(path: Path, expected: str) -> None:
 def git(path: Path, *args: str) -> str:
     return subprocess.run(
         git_command(path, *args), check=True, capture_output=True, text=True, env=git_environment()
+    ).stdout.rstrip("\n")
+
+
+def prepare_git(path: Path, *args: str) -> str:
+    """隔离新 SDK 的写入与 recipe init；来源查询仍消费宿主实际配置。"""
+    environment = git_environment()
+    for name in ("GIT_CONFIG", "GIT_CONFIG_PARAMETERS"):
+        environment.pop(name, None)
+    environment.update(GIT_CONFIG_SYSTEM="/dev/null", GIT_CONFIG_GLOBAL="/dev/null",
+                       GIT_CONFIG_COUNT="0", GIT_TEMPLATE_DIR="")
+    return subprocess.run(
+        git_command(path, "-c", "init.templateDir=", *args),
+        check=True, capture_output=True, text=True, env=environment
     ).stdout.rstrip("\n")
 
 
@@ -524,7 +537,7 @@ def verify(sdk: Path, lock: dict) -> None:
 def fetch_recipe(destination: Path, lock: dict) -> tuple[bytes, dict, list[tuple[dict, Path]]]:
     entry = lock["sdk_derivation"]
     destination.mkdir()
-    git(destination, "init", "-q", "-b", "master")
+    prepare_git(destination, "init", "-q", "-b", "master")
     git(destination, "remote", "add", "origin", entry["repository"])
     git(destination, "fetch", "--no-filter", "origin", entry["revision"])
     if git(destination, "rev-parse", "FETCH_HEAD") != entry["revision"]:
@@ -584,17 +597,17 @@ def prepare(output: Path, lock: dict) -> None:
     output.mkdir()
     with tempfile.TemporaryDirectory(prefix="esp-sdk-recipe-") as temporary:
         data, recipe, resources = fetch_recipe(Path(temporary) / "recipe", lock)
-        git(output, "init", "-q", "-b", "master")
+        prepare_git(output, "init", "-q", "-b", "master")
         git(output, "remote", "add", "origin", lock["idf"]["repository"])
         # 新根首次 checkout 也会执行宿主内容驱动，先核实际有效配置。
         reject_external_content_filters(output)
         git(output, "fetch", "--no-filter", "origin", lock["idf"]["revision"])
-        git(output, "checkout", "--detach", "FETCH_HEAD")
-        git(output, "submodule", "update", "--init", "--recursive", "--checkout", "--no-recommend-shallow", "--jobs=8")
+        prepare_git(output, "checkout", "--detach", "FETCH_HEAD")
+        prepare_git(output, "submodule", "update", "--init", "--recursive", "--checkout", "--no-recommend-shallow", "--jobs=8")
         lwip = output / lock["lwip"]["path"]
         git(lwip, "remote", "set-url", "origin", lock["lwip"]["repository"])
         git(lwip, "fetch", "--no-filter", "origin", lock["lwip"]["revision"])
-        git(lwip, "checkout", "--detach", "FETCH_HEAD")
+        prepare_git(lwip, "checkout", "--detach", "FETCH_HEAD")
         apply_recipe(output, lock, data, recipe, resources)
 
 

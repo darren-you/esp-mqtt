@@ -426,9 +426,154 @@ class SDKContractTest(unittest.TestCase):
                     self.assertFalse((output / "sdk.c").exists())
                     self.assertFalse((output / SDK.DERIVATION_STAMP).exists())
 
+    def test_fetch_recipe_does_not_copy_template_transaction_hook(self):
+        marker = self.root / "recipe-transaction-hook-ran"
+        template = self.root / "recipe-template"
+        (template / "hooks").mkdir(parents=True)
+        hook = template / "hooks/reference-transaction"
+        hook.write_text("#!/bin/sh\nprintf ran >> " + shlex.quote(str(marker)) + "\n")
+        hook.chmod(0o755)
+        self.run_git(self.recipe_source, "tag", "v1.0.0")
+        configuration = self.root / "recipe-global"
+        self.run_git(self.root, "config", "--file", str(configuration),
+                     "url." + self.recipe_source.as_uri() + ".insteadOf", SDK.RECIPE_REPOSITORY)
+        self.run_git(self.root, "config", "--file", str(configuration), "protocol.file.allow", "always")
+        lock_file = self.root / "recipe-component-lock.json"
+        lock_file.write_bytes(encoded(self.lock))
+        output = self.root / "recipe-only"
+        with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(configuration), "GIT_TEMPLATE_DIR": str(template)}), \
+                patch.object(SDK, "LOCK_PATH", lock_file):
+            lock = SDK.read_lock()
+            data, recipe, resources = SDK.fetch_recipe(output, lock)
+            self.assertEqual(SDK.git(output, "remote", "get-url", "origin"), self.recipe_source.as_uri())
+        self.assertFalse(marker.exists(), "recipe 取源前不得复制会执行的宿主 transaction hook")
+        self.assertFalse((output / ".git/hooks/reference-transaction").exists())
+        self.assertEqual(data, self.recipe_bytes)
+        self.assertEqual(recipe, self.recipe)
+        self.assertEqual([entry for entry, _ in resources], self.recipe["managed_patches"])
+        for declaration, patch_file in resources:
+            self.assertEqual(SDK.digest(patch_file.read_bytes()), declaration["sha256"])
+
+    def test_fetch_recipe_disables_effective_transaction_hooks(self):
+        marker = self.root / "effective-transaction-hook-ran"
+        hooks = self.root / "effective-hooks"
+        hooks.mkdir()
+        hook = hooks / "reference-transaction"
+        hook.write_text("#!/bin/sh\nprintf ran >> " + shlex.quote(str(marker)) + "\n")
+        hook.chmod(0o755)
+        self.run_git(self.recipe_source, "tag", "v1.0.0")
+        lock_file = self.root / "effective-recipe-lock.json"
+        lock_file.write_bytes(encoded(self.lock))
+        for scope in ("global", "command"):
+            with self.subTest(scope=scope):
+                marker.unlink(missing_ok=True)
+                configuration = self.root / ("effective-recipe-global-" + scope)
+                self.run_git(self.root, "config", "--file", str(configuration),
+                             "url." + self.recipe_source.as_uri() + ".insteadOf", SDK.RECIPE_REPOSITORY)
+                self.run_git(self.root, "config", "--file", str(configuration), "protocol.file.allow", "always")
+                environment = {"GIT_CONFIG_GLOBAL": str(configuration)}
+                if scope == "global":
+                    self.run_git(self.root, "config", "--file", str(configuration), "core.hooksPath", str(hooks))
+                else:
+                    environment.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.hooksPath", GIT_CONFIG_VALUE_0=str(hooks))
+                output = self.root / ("effective-recipe-" + scope)
+                with patch.dict(os.environ, environment), patch.object(SDK, "LOCK_PATH", lock_file):
+                    data, recipe, resources = SDK.fetch_recipe(output, SDK.read_lock())
+                    self.assertEqual(SDK.git(output, "remote", "get-url", "origin"), self.recipe_source.as_uri())
+                self.assertFalse(marker.exists(), "recipe 原生 fetch 不得执行实际配置中的外部事务 hook")
+                self.assertEqual(data, self.recipe_bytes)
+                self.assertEqual(recipe, self.recipe)
+                self.assertEqual([entry for entry, _ in resources], self.recipe["managed_patches"])
+
+    def test_prepare_isolates_conditional_nested_content_filters(self):
+        marker = self.root / "nested-filter-ran"
+        attributes = self.root / "nested-attributes"
+        attributes.write_text("tcp.c filter=source-probe\n")
+        driver = self.root / "nested-driver"
+        command = shlex.join([sys.executable, "-c",
+                              'import pathlib,sys; data=sys.stdin.buffer.read(); '
+                              'pathlib.Path(sys.argv[1]).write_text("ran"); sys.stdout.buffer.write(data)', str(marker)])
+        self.run_git(self.root, "config", "--file", str(driver), "core.attributesFile", str(attributes))
+        self.run_git(self.root, "config", "--file", str(driver), "filter.source-probe.smudge", command)
+        original = SDK.git
+        original_prepare = getattr(SDK, "prepare_git", original)
+        sources = {self.lock["idf"]["repository"]: str(self.sdk),
+                   self.lock["lwip"]["repository"]: str(self.source),
+                   self.lock["sdk_derivation"]["repository"]: str(self.recipe_source)}
+        configuration = self.root / "nested-global"
+        key = "includeIf.gitdir:*/modules/**.path"
+        for scope in ("global", "command"):
+            with self.subTest(scope=scope):
+                marker.unlink(missing_ok=True)
+                configuration.write_text("")
+                environment = {"GIT_CONFIG_GLOBAL": str(configuration)}
+                if scope == "global":
+                    self.run_git(self.root, "config", "--file", str(configuration), key, str(driver))
+                else:
+                    environment.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0=key, GIT_CONFIG_VALUE_0=str(driver))
+                output = self.root / ("conditional-sdk-" + scope)
+                def local_git(path, *args):
+                    items = list(args)
+                    if items and items[0] == "fetch":
+                        items[-2] = sources[original(path, "remote", "get-url", "origin")]
+                    if items and items[0] == "submodule":
+                        items = ["-c", "protocol.file.allow=always", *items]
+                    return original(path, *items)
+                def local_prepare_git(path, *args):
+                    items = list(args)
+                    if items and items[0] == "submodule":
+                        items = ["-c", "protocol.file.allow=always", *items]
+                    return original_prepare(path, *items)
+                with patch.dict(os.environ, environment), patch.object(SDK, "git", local_git), \
+                        patch.object(SDK, "prepare_git", local_prepare_git, create=True):
+                    # 末次真实配置 guard 仍拒该 driver；此前 native checkout 不能执行它。
+                    with self.assertRaisesRegex(ValueError, "外部 Git filter"):
+                        SDK.prepare(output, self.lock)
+                self.assertFalse(marker.exists(), "首次递归子仓 checkout 不得运行条件 filter")
+                self.assertEqual((output / self.lock["lwip"]["path"] / "tcp.c").read_text(), "corrected lwip\n")
+                self.assertFalse((output / SDK.DERIVATION_STAMP).exists())
+
+    def test_prepare_does_not_install_inherited_template_hooks(self):
+        marker = self.root / "template-hook-ran"
+        template = self.root / "git-template"
+        (template / "hooks").mkdir(parents=True)
+        (template / "config").write_text("[source-probe]\n\ttemplate = inherited\n")
+        hook = template / "hooks/post-checkout"
+        hook.write_text("#!/bin/sh\nprintf ran > " + shlex.quote(str(marker)) + "\n")
+        hook.chmod(0o755)
+        original = SDK.git
+        original_prepare = getattr(SDK, "prepare_git", original)
+        sources = {self.lock["idf"]["repository"]: str(self.sdk),
+                   self.lock["lwip"]["repository"]: str(self.source),
+                   self.lock["sdk_derivation"]["repository"]: str(self.recipe_source)}
+        output = self.root / "template-sdk"
+        def local_git(path, *args):
+            items = list(args)
+            if items and items[0] == "fetch":
+                items[-2] = sources[original(path, "remote", "get-url", "origin")]
+            if items and items[0] == "submodule":
+                items = ["-c", "protocol.file.allow=always", *items]
+            return original(path, *items)
+        def local_prepare_git(path, *args):
+            items = list(args)
+            if items and items[0] == "submodule":
+                items = ["-c", "protocol.file.allow=always", *items]
+            return original_prepare(path, *items)
+        with patch.dict(os.environ, {"GIT_TEMPLATE_DIR": str(template)}), \
+                patch.object(SDK, "git", local_git), patch.object(SDK, "prepare_git", local_prepare_git, create=True):
+            SDK.prepare(output, self.lock)
+            SDK.verify(output, self.lock)
+        self.assertFalse(marker.exists(), "新 SDK 原生装配不得安装或运行宿主 template hook")
+        self.assertFalse((output / ".git/hooks/post-checkout").exists())
+        for repository in (output, output / self.lock["lwip"]["path"], output / self.recipe["tlsf"]["path"]):
+            configuration = self.run_git(repository, "config", "--local", "--list")
+            self.assertNotIn("source-probe.template", configuration, "新根与递归子仓不得复制宿主 template config")
+        self.assertEqual((output / SDK.DERIVATION_STAMP).read_bytes(), self.recipe_bytes)
+
     def test_full_prepare_uses_exact_git_sources_and_never_runs_base(self):
         output = self.root / "new-sdk"
         original = SDK.git
+        original_prepare = SDK.prepare_git
         sources = {self.lock["idf"]["repository"]: str(self.sdk),
                    self.lock["lwip"]["repository"]: str(self.source),
                    self.lock["sdk_derivation"]["repository"]: str(self.recipe_source)}
@@ -444,7 +589,12 @@ class SDKContractTest(unittest.TestCase):
                 items[-2] = sources[url]
             self.assertNotIn("submodule", items if path.name == "recipe" else [])
             return original(path, *items)
-        with patch.object(SDK, "git", local_git):
+        def local_prepare_git(path, *args):
+            items = list(args)
+            if items and items[0] == "submodule":
+                items = ["-c", "protocol.file.allow=always", *items]
+            return original_prepare(path, *items)
+        with patch.object(SDK, "git", local_git), patch.object(SDK, "prepare_git", local_prepare_git):
             SDK.prepare(output, self.lock)
             SDK.verify(output, self.lock)
         self.assertEqual(fetches, [self.lock["sdk_derivation"]["revision"],
