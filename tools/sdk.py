@@ -36,6 +36,44 @@ def git_command(path: Path, *args: str) -> list[str]:
     return ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(path), *args]
 
 
+def apply_git_command(path: Path, *args: str) -> list[str]:
+    # 精确容量原文与 patch 使用 LF，apply 不继承宿主／平台的默认 CRLF。
+    return git_command(path, "-c", "core.autocrlf=false", "-c", "core.eol=lf", *args)
+
+
+def reject_builtin_content_conversions(path: Path, files: list[str], patch: bytes) -> None:
+    """在首写前读取实际 worktree/info/global 属性，拒绝会改写受管字节的转换。"""
+    result = subprocess.run(
+        git_command(path, "check-attr", "-z", "text", "eol", "working-tree-encoding", "ident", "--", *files),
+        check=True, capture_output=True, env=git_environment())
+    fields = result.stdout.split(b"\0")
+    if fields[-1] != b"" or (len(fields) - 1) % 3:
+        raise ValueError("SDK 内置 Git 属性输出不完整")
+    attributes = {relative: {} for relative in files}
+    for offset in range(0, len(fields) - 1, 3):
+        relative, name, value = (part.decode() for part in fields[offset:offset + 3])
+        if relative not in attributes:
+            raise ValueError("SDK 内置 Git 属性越出受管路径")
+        attributes[relative][name] = value
+    patch_outputs = {relative: b"" for relative in files}
+    current = None
+    for line in patch.splitlines():
+        if line.startswith(b"diff --git "):
+            current = next((relative for relative in files
+                            if line == b"diff --git a/" + relative.encode() + b" b/" + relative.encode()), None)
+        elif current is not None and line.startswith((b"+", b" ")) and not line.startswith(b"+++"):
+            patch_outputs[current] += line[1:] + b"\n"
+    for relative, values in attributes.items():
+        if set(values) != {"text", "eol", "working-tree-encoding", "ident"}:
+            raise ValueError("SDK 内置 Git 属性集合不完整")
+        encoding = values["working-tree-encoding"]
+        if ((values["text"] != "unset" and values["eol"] == "crlf")
+                or encoding not in ("", "unspecified", "unset") and encoding.upper().replace("-", "") != "UTF8"
+                or values["ident"] == "set" and re.search(rb"\$Id(?:\$|:[^\r\n]*\$)",
+                                                         (path / relative).read_bytes() + patch_outputs[relative])):
+            raise ValueError(f"SDK 内置 Git 转换会改变受管原始字节：{relative}：{path}")
+
+
 def reject_external_content_filters(path: Path) -> None:
     """装配前拒绝 Git 最终有效的外部内容驱动，避免 apply 执行未知程序。"""
     keys = set(git(path, "config", "--null", "--name-only", "--list").split("\0"))
@@ -578,9 +616,12 @@ def apply_recipe(sdk: Path, lock: dict, data: bytes, recipe: dict,
             names.append(parts[2])
         if len(names) != len(set(names)) or set(names) != {item["path"] for item in declaration["files"]}:
             raise ValueError("SDK patch 修改文件集合与唯一 recipe 不符")
-        git(repo, "apply", "--check", "--whitespace=nowarn", str(path))
+        reject_builtin_content_conversions(repo, names, path.read_bytes())
+        subprocess.run(apply_git_command(repo, "apply", "--check", "--whitespace=nowarn", str(path)),
+                       check=True, capture_output=True, env=git_environment())
     for declaration, path in resources:
-        git(repositories[declaration["repository"]], "apply", "--whitespace=nowarn", str(path))
+        subprocess.run(apply_git_command(repositories[declaration["repository"]], "apply", "--whitespace=nowarn", str(path)),
+                       check=True, capture_output=True, env=git_environment())
     descriptor = os.open(sdk / DERIVATION_STAMP, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
     with os.fdopen(descriptor, "wb") as stream:
         stream.write(data)

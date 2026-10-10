@@ -311,6 +311,89 @@ class SDKContractTest(unittest.TestCase):
         self.assertEqual(self.stamp.read_bytes(), self.recipe_bytes)
         self.assertEqual(self.stamp.stat().st_mode & 0o777, 0o400)
 
+    def test_apply_rejects_builtin_crlf_on_all_managed_roots_before_first_write(self):
+        for name in ("idf", "tlsf"):
+            with self.subTest(repository=name):
+                case = SDKContractTest("test_apply_exact_recipe_from_pristine_real_git")
+                try:
+                    case.setUp()
+                    case.pristine()
+                    repository = case.sdk if name == "idf" else case.tlsf
+                    declaration = next(entry for entry in case.recipe["managed_patches"] if entry["repository"] == name)
+                    relative = declaration["files"][-1]["path"]
+                    metadata = Path(case.run_git(repository, "rev-parse", "--absolute-git-dir"))
+                    (metadata / "info/attributes").write_text(relative + " text eol=crlf\n")
+                    before = {(item["repository"], file["path"]):
+                              (case.sdk if item["repository"] == "idf" else case.tlsf).joinpath(file["path"]).read_bytes()
+                              for item in case.recipe["managed_patches"] for file in item["files"]}
+                    error = None
+                    try:
+                        SDK.apply_recipe(case.sdk, case.lock, case.recipe_bytes, case.recipe, case.resources)
+                    except (ValueError, subprocess.CalledProcessError) as actual:
+                        error = actual
+                    changed = [f"{root}/{path}" for (root, path), raw in before.items()
+                               if (case.sdk if root == "idf" else case.tlsf).joinpath(path).read_bytes() != raw]
+                    self.assertEqual(changed, [], f"内置转换首写前未拒：changed={changed}, stamp={case.stamp.exists()}, error={error}")
+                    self.assertFalse(case.stamp.exists())
+                    self.assertIsInstance(error, ValueError)
+                    self.assertIn("内置 Git", str(error))
+                finally:
+                    case.doCleanups()
+
+    def test_apply_rejects_encoding_and_ident_before_first_write(self):
+        for attribute, suffix in (("working-tree-encoding=ISO-8859-1", "capacité"),
+                                  ("ident", "$Id$")):
+            with self.subTest(attribute=attribute):
+                case = SDKContractTest("test_apply_exact_recipe_from_pristine_real_git")
+                try:
+                    case.setUp()
+                    case.pristine()
+                    declaration, resource = case.resources[0]
+                    relative = declaration["files"][0]["path"]
+                    original = (case.sdk / relative).read_bytes()
+                    after = ("official idf plus approved " + suffix + " statistics\n").encode()
+                    (case.sdk / relative).write_bytes(after)
+                    content = case.run_git(case.sdk, "diff", "--binary", "--", relative).encode() + b"\n"
+                    resource.write_bytes(content)
+                    declaration["sha256"] = SDK.digest(content)
+                    declaration["files"][0]["after_sha256"] = SDK.digest(after)
+                    case.recipe_bytes = encoded(case.recipe)
+                    case.lock["sdk_derivation"]["sha256"] = SDK.digest(case.recipe_bytes)
+                    (case.sdk / relative).write_bytes(original)
+                    (case.sdk / ".git/info/attributes").write_text(relative + " " + attribute + "\n")
+                    before = {(item["repository"], file["path"]):
+                              (case.sdk if item["repository"] == "idf" else case.tlsf).joinpath(file["path"]).read_bytes()
+                              for item in case.recipe["managed_patches"] for file in item["files"]}
+                    error = None
+                    try:
+                        SDK.apply_recipe(case.sdk, case.lock, case.recipe_bytes, case.recipe, case.resources)
+                    except (ValueError, subprocess.CalledProcessError) as actual:
+                        error = actual
+                    changed = [f"{root}/{path}" for (root, path), raw in before.items()
+                               if (case.sdk if root == "idf" else case.tlsf).joinpath(path).read_bytes() != raw]
+                    self.assertEqual(changed, [], f"内置转换首写前未拒：changed={changed}, stamp={case.stamp.exists()}, error={error}")
+                    self.assertFalse(case.stamp.exists())
+                    self.assertIsInstance(error, ValueError)
+                    self.assertIn("内置 Git", str(error))
+                finally:
+                    case.doCleanups()
+
+    def test_apply_preserves_safe_lf_and_utf8_with_host_crlf_defaults(self):
+        for attribute in ("text eol=lf", "-text eol=crlf", "working-tree-encoding=UTF-8", "ident"):
+            with self.subTest(attribute=attribute):
+                case = SDKContractTest("test_apply_exact_recipe_from_pristine_real_git")
+                try:
+                    case.setUp()
+                    case.pristine()
+                    case.run_git(case.sdk, "config", "core.autocrlf", "true")
+                    case.run_git(case.sdk, "config", "core.eol", "crlf")
+                    (case.sdk / ".git/info/attributes").write_text("sdk.c " + attribute + "\n")
+                    SDK.apply_recipe(case.sdk, case.lock, case.recipe_bytes, case.recipe, case.resources)
+                    case.verify()
+                    self.assertEqual(case.stamp.read_bytes(), case.recipe_bytes)
+                finally:
+                    case.doCleanups()
+
     def test_apply_rejects_effective_external_filters_before_mutation(self):
         self.pristine()
         before = (self.sdk / "sdk.c").read_bytes()

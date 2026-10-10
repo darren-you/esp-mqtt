@@ -33,3 +33,5 @@ python3 -B -m unittest discover -s tools/tests -p test_sdk.py
 从 SDK 安装与导出前设置 `PYTHONDONTWRITEBYTECODE=1`，后续 `idf.py`、CMake 和独立 Ninja／`cmake --build` 保留该环境，避免 SDK 来源出现 Python 缓存；来源检查仍拒绝所有 ignored 内容。真实临时 Git 回归同时核对 schema2 派生与这些严格来源边界，不下载真实 SDK，不授予固件、Broker、双板容量或实板资格。
 
 IDF 与 lwIP 的原始唯一 origin 和 Git 实际 fetch 身份必须与配方相同；支持对应 canonical HTTPS／SSH 写法，不改写来源配置。来源检查仅消费原始对象、索引与文件，不运行内容转换的 status／diff 或 Shell 子模块入口；全部 Git 命令显式禁用 fsmonitor 与 hooks，recipe fetch 不执行模板或实际配置中的事务 hook。首次新 SDK checkout 前及容量补丁装配前读取全部配置作用域的最终有效 clean／smudge／process 命令，任何非空外部 filter 均在首次 `git apply` 前拒绝，不让外部命令改写已核对的源码。新 SDK 的原生 init／checkout／递归子模块 update 与 recipe 临时仓 init 单独隔离宿主 system／global／调用者注入配置及模板，并禁用 hooks，覆盖仅在新子仓 Git 目录才生效的条件 filter 和模板事务 hook；不修改宿主配置。recipe 的 fetch、读取、独立 fetch 与全部来源／origin／promisor 校验仍按实际配置作用域执行；递归 update 自身的公开子仓 fetch 属于同一隔离操作。恶意条件配置仍可被后续真实装配门拒绝，拒绝不等于完整 SDK 准备成功。
+
+容量补丁首写前通过原生 `git check-attr` 核对全部受管路径的实际 worktree／info／global／system 属性；会改写原始字节的 CRLF、非 UTF-8 工作树编码，以及受管内容中的 `$Id$` 展开均拒绝。`git apply --check` 与实际 apply 单独固定 `core.autocrlf=false`、`core.eol=lf`，不改变来源读取与 origin／promisor 的实际配置作用域；安全 LF、未设转换、禁用 text 及 UTF-8 不因此拒绝。失败拒绝发生在两仓任何受管文件或 stamp 首写之前。
