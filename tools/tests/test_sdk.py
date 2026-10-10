@@ -90,6 +90,8 @@ class SDKContractTest(unittest.TestCase):
                      "sdk_derivation": {"repository": SDK.RECIPE_REPOSITORY,
                                         "revision": self.run_git(self.recipe_source, "rev-parse", "HEAD"),
                                         "path": "sdk-lock.json", "sha256": SDK.digest(self.recipe_bytes)}}
+        self.run_git(self.sdk, "remote", "add", "origin", self.lock["idf"]["repository"])
+        self.run_git(self.lwip, "remote", "set-url", "origin", self.lock["lwip"]["repository"])
         self.stamp = self.sdk / SDK.DERIVATION_STAMP
         self.stamp.write_bytes(self.recipe_bytes)
         self.stamp.chmod(0o400)
@@ -122,6 +124,54 @@ class SDKContractTest(unittest.TestCase):
         self.run_git(self.sdk, "restore", "--", "sdk.c")
         self.run_git(self.tlsf, "restore", "--", "tlsf.c")
         self.stamp.unlink()
+
+
+    def test_rejects_wrong_idf_and_lwip_origins(self):
+        for name, repo in (("idf", self.sdk), ("lwip", self.lwip)):
+            with self.subTest(repository=name):
+                self.run_git(repo, "remote", "set-url", "origin", "https://example.invalid/untrusted.git")
+                self.reject("origin")
+                self.run_git(repo, "remote", "set-url", "origin", self.lock[name]["repository"])
+
+    def test_rejects_effective_fetch_rewrite(self):
+        self.run_git(self.lwip, "config", "url.https://example.invalid/untrusted.git.insteadOf", self.lock["lwip"]["repository"])
+        self.reject("origin")
+
+    def test_verify_never_runs_local_or_command_scope_fsmonitor(self):
+        marker = self.root / "fsmonitor-ran"
+        script = self.root / "fsmonitor.sh"
+        script.write_text("#!/bin/sh\nprintf ran > " + shlex.quote(str(marker)) + "\nprintf 'token\\0'\n")
+        script.chmod(0o755)
+        for scope in ("local", "command"):
+            with self.subTest(scope=scope):
+                marker.unlink(missing_ok=True)
+                environment = {}
+                if scope == "local":
+                    self.run_git(self.sdk, "config", "core.fsmonitor", str(script))
+                else:
+                    self.run_git(self.sdk, "config", "--unset", "core.fsmonitor")
+                    environment = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": str(script)}
+                with patch.dict(os.environ, environment):
+                    self.verify()
+                self.assertFalse(marker.exists(), "检查不得运行 fsmonitor")
+
+    def test_verify_does_not_run_configured_clean_filter_or_modify_already_checked_lwip(self):
+        marker = self.root / "filter-ran"
+        target = self.lwip / "tcp.c"
+        original = target.read_bytes()
+        script = self.root / "filter.py"
+        script.write_text("from pathlib import Path\nimport sys\ndata=sys.stdin.buffer.read()\n"
+                          + "Path(" + repr(str(marker)) + ").write_text('ran')\n"
+                          + "Path(" + repr(str(target)) + ").write_bytes(b'untrusted source\\n')\n"
+                          + "sys.stdout.buffer.write(data)\n")
+        attributes = self.root / "attributes"
+        attributes.write_text(".gitmodules filter=source-probe\n")
+        self.run_git(self.sdk, "config", "core.attributesFile", str(attributes))
+        self.run_git(self.sdk, "config", "filter.source-probe.clean", shlex.join([sys.executable, str(script)]))
+        os.utime(self.sdk / ".gitmodules", (1, 1))
+        self.verify()
+        self.assertFalse(marker.exists(), "检查不得运行外部 filter")
+        self.assertEqual(target.read_bytes(), original)
 
     def test_accepts_exact_derivation_and_locked_gitlink(self):
         self.verify()
@@ -261,6 +311,39 @@ class SDKContractTest(unittest.TestCase):
         self.assertEqual(self.stamp.read_bytes(), self.recipe_bytes)
         self.assertEqual(self.stamp.stat().st_mode & 0o777, 0o400)
 
+    def test_apply_rejects_effective_external_filters_before_mutation(self):
+        self.pristine()
+        before = (self.sdk / "sdk.c").read_bytes()
+        marker = self.root / "apply-filter-ran"
+        command = shlex.join([sys.executable, "-c", 'import sys,pathlib; data=sys.stdin.buffer.read(); pathlib.Path(sys.argv[1]).write_text("ran"); sys.stdout.buffer.write(data)', str(marker)])
+        attributes = self.root / "outside-attributes"
+        attributes.write_text("sdk.c filter=source-probe\n")
+        self.run_git(self.sdk, "config", "core.attributesFile", str(attributes))
+        for scope in ("local", "global", "system", "command"):
+            for kind in ("clean", "smudge", "process"):
+                with self.subTest(scope=scope, kind=kind):
+                    key = "filter.source-probe." + kind
+                    environment = {"GIT_CONFIG_GLOBAL": str(self.root / "global-config"),
+                                   "GIT_CONFIG_SYSTEM": str(self.root / "system-config"), "GIT_CONFIG_NOSYSTEM": "0"}
+                    for file in ("global-config", "system-config"):
+                        (self.root / file).write_text("")
+                    if scope == "local":
+                        self.run_git(self.sdk, "config", key, command)
+                    elif scope == "command":
+                        environment.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0=key, GIT_CONFIG_VALUE_0=command)
+                    else:
+                        self.run_git(self.root, "config", "--file", str(self.root / (scope + "-config")), key, command)
+                    try:
+                        with patch.dict(os.environ, environment):
+                            with self.assertRaisesRegex(ValueError, "外部 Git filter"):
+                                SDK.apply_recipe(self.sdk, self.lock, self.recipe_bytes, self.recipe, self.resources)
+                        self.assertFalse(marker.exists(), "补丁检查前不得执行 filter")
+                        self.assertEqual((self.sdk / "sdk.c").read_bytes(), before)
+                        self.assertFalse(self.stamp.exists())
+                    finally:
+                        if scope == "local":
+                            self.run_git(self.sdk, "config", "--unset", key)
+
     def test_apply_checks_every_patch_before_any_mutation(self):
         self.pristine()
         resource = self.resources[1][1]
@@ -302,6 +385,47 @@ class SDKContractTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "唯一 recipe"):
                 SDK.read_lock()
 
+    def test_prepare_rejects_inherited_filters_before_first_checkout(self):
+        marker = self.root / "checkout-filter-ran"
+        attributes = self.root / "checkout-attributes"
+        attributes.write_text("sdk.c filter=source-probe\n")
+        command = shlex.join([sys.executable, "-c", 'import pathlib,sys; pathlib.Path(sys.argv[1]).write_text("ran")', str(marker)])
+        original = SDK.git
+        sources = {self.lock["idf"]["repository"]: str(self.sdk),
+                   self.lock["lwip"]["repository"]: str(self.source),
+                   self.lock["sdk_derivation"]["repository"]: str(self.recipe_source)}
+        for scope in ("global", "command"):
+            for kind in ("smudge", "process"):
+                with self.subTest(scope=scope, kind=kind):
+                    output = self.root / ("new-sdk-" + scope + "-" + kind)
+                    configuration = self.root / "inherited-config"
+                    configuration.write_text("")
+                    self.run_git(self.root, "config", "--file", str(configuration), "core.attributesFile", str(attributes))
+                    environment = {"GIT_CONFIG_GLOBAL": str(configuration)}
+                    key = "filter.source-probe." + kind
+                    if scope == "global":
+                        self.run_git(self.root, "config", "--file", str(configuration), key, command)
+                    else:
+                        environment.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0=key, GIT_CONFIG_VALUE_0=command)
+                    calls = []
+                    def local_git(path, *args):
+                        items = list(args)
+                        if path == output:
+                            calls.append(items[0])
+                        if items and items[0] == "fetch":
+                            items[-2] = sources[original(path, "remote", "get-url", "origin")]
+                        if items and items[0] == "submodule":
+                            items = ["-c", "protocol.file.allow=always", *items]
+                        return original(path, *items)
+                    with patch.dict(os.environ, environment), patch.object(SDK, "git", local_git):
+                        with self.assertRaisesRegex(ValueError, "外部 Git filter"):
+                            SDK.prepare(output, self.lock)
+                    self.assertNotIn("checkout", calls)
+                    self.assertNotIn("submodule", calls)
+                    self.assertFalse(marker.exists(), "首次 checkout 前不得执行 filter")
+                    self.assertFalse((output / "sdk.c").exists())
+                    self.assertFalse((output / SDK.DERIVATION_STAMP).exists())
+
     def test_full_prepare_uses_exact_git_sources_and_never_runs_base(self):
         output = self.root / "new-sdk"
         original = SDK.git
@@ -311,13 +435,13 @@ class SDKContractTest(unittest.TestCase):
         fetches = []
         def local_git(path, *args):
             items = list(args)
-            if items[:2] in (["remote", "add"], ["remote", "set-url"]):
-                if items[-1] in sources:
-                    items[-1] = sources[items[-1]]
             if items and items[0] == "submodule" and "update" in items:
                 items = ["-c", "protocol.file.allow=always", *items]
             if items and items[0] == "fetch":
                 fetches.append(items[-1])
+                # 只把真实取对象目标转到本地 fixture，保留可核对的 canonical origin。
+                url = original(path, "remote", "get-url", "origin")
+                items[-2] = sources[url]
             self.assertNotIn("submodule", items if path.name == "recipe" else [])
             return original(path, *items)
         with patch.object(SDK, "git", local_git):
@@ -387,6 +511,7 @@ class SDKContractTest(unittest.TestCase):
     def test_rejects_shared_nested_source_even_when_fsck_passes(self):
         shutil.rmtree(self.lwip)
         self.run_git(self.root, "clone", "-q", "--shared", str(self.source), str(self.lwip))
+        self.run_git(self.lwip, "remote", "set-url", "origin", self.lock["lwip"]["repository"])
         self.run_git(self.lwip, "fsck", "--connectivity-only", "--no-dangling")
         with self.assertRaisesRegex(ValueError, "alternates"):
             SDK.verify(self.sdk, self.lock)
@@ -507,6 +632,7 @@ class SDKContractTest(unittest.TestCase):
         shutil.rmtree(self.lwip)
         self.run_git(self.root, "clone", "-q", str(self.source), str(self.lwip))
         self.run_git(self.lwip, "checkout", "-q", "--detach", self.lock["lwip"]["revision"])
+        self.run_git(self.lwip, "remote", "set-url", "origin", self.lock["lwip"]["repository"])
         self.assertTrue((self.lwip / ".git").is_dir())
         SDK.verify(self.sdk, self.lock)
 
