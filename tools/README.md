@@ -1,26 +1,27 @@
 # SDK 准备与检查
 
-`tools/sdk.py` 根据本仓 `sdk-lock.json` 使用公开精确提交准备独立 ESP-IDF checkout，并只将其 lwIP 子模块切到已验证修正提交。`prepare` 仅接受不存在的新路径，不覆盖机器已有 SDK；`check` 核对 IDF、lwIP、子模块状态和唯一预期 gitlink 差异。
-
-## 架构拓扑
+`tools/sdk.py` 只消费本仓 [sdk-lock.json](../sdk-lock.json)、Python 标准库、Git 和锁定的公开来源。组件锁保存 IDF／lwIP 身份，以及 ESP Base 唯一 recipe 的来源提交与完整摘要；TLSF、两份修改与逐文件原文／派生摘要只存在于该 recipe。组件不保存第二套 patch 清单或脚本。
 
 ```mermaid
 flowchart LR
-    lock["sdk-lock.json：IDF / lwIP 精确提交"] --> prepare["sdk.py prepare：新建独立 checkout"]
-    official["官方 ESP-IDF 与子模块"] --> prepare
-    fixed["公开 esp-lwip 修正"] --> prepare
-    prepare --> checkout["独立 SDK"]
-    checkout --> check["sdk.py check：提交与工作树"]
+    lock["组件 SDK 锁：官方身份 / recipe 提交与摘要"] --> prepare["sdk.py prepare：独立新目录"]
+    recipe["Base 精确提交：唯一 sdk-lock.json / 两份修改"] --> prepare
+    sdk["锁定 IDF / lwIP / TLSF 官方源码"] --> prepare
+    prepare --> checkout["正式 SDK / 唯一 esp-sdk-derivation.json"]
+    checkout --> check["本仓 sdk.py check：清单 / 源码 / Git 状态"]
     check --> component["CMake 组件守卫"]
 ```
 
 ```bash
 python3 tools/sdk.py prepare --path "$HOME/.espressif/frameworks/esp-mqtt-idf"
-bash "$HOME/.espressif/frameworks/esp-mqtt-idf/install.sh" esp32c3
-bash "$HOME/.espressif/frameworks/esp-mqtt-idf/install.sh" esp32
+bash "$HOME/.espressif/frameworks/esp-mqtt-idf/install.sh" esp32c3 esp32
 source "$HOME/.espressif/frameworks/esp-mqtt-idf/export.sh"
 python3 tools/sdk.py check --path "$IDF_PATH"
-python3 -m unittest discover -s tools/tests -p 'test_*.py'
+python3 -B -m unittest discover -s tools/tests -p test_sdk.py
 ```
 
-准备 SDK 可能下载上游与工具链；本轮仅用已经存在的独立受控 checkout执行 `check`，没有运行 `prepare` 或修改已有 SDK。host 运行层测试不需要 ESP-IDF。硬件构建与刷写属于后续单独验收。
+`prepare` 只创建不存在的新路径，从冻结 Base 提交读取 recipe 和两份修改的数据，不执行 Base 构建或 SDK 内脚本。它核对清单与 patch 摘要、所有官方原文及完整修改集合，在全部 `git apply --check` 通过后才应用；最后独占创建 SDK 根普通文件 `esp-sdk-derivation.json`，其字节与冻结 recipe 完全相同。工具链安装与导出仍是独立的官方入口。
+
+`check` 只读本地 SDK：先核该普通文件的完整摘要，再核官方 IDF／lwIP／TLSF 提交、逐文件原文与派生摘要、索引、精确工作树差异及所有子模块；不下载、不执行未知脚本，不调用相邻仓库。未装配旧 SDK、清单缺失／链接／漂移、部分修改、未声明修改及子模块漂移均拒绝。既有路径和失败现场保持，不提供自动修复、可选 allowlist 或旧门回退。`--quiet` 供构建调用，仅省略成功输出。
+
+真实 Git fixture 覆盖独立准备、精确来源与逐文件校验，以及原始 lwIP、脏状态、索引、TLSF、清单、链接、部分修改和越界路径等拒绝；它不下载真实 SDK、不触达设备。软件守卫通过不授予 MQTT／Base 组合容量、Broker 或实板资格。
