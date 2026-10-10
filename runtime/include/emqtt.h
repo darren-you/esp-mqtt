@@ -48,3 +48,18 @@ esp_err_t emqtt_subscribe(emqtt_runtime_t *runtime, const char *filter, uint8_t 
 esp_err_t emqtt_unsubscribe(emqtt_runtime_t *runtime, const char *filter);
 /* 官方 outbox 的协议字节计数，不是完整 heap 占用或远端处理证明。 */
 int emqtt_outbox_size(const emqtt_runtime_t *runtime);
+
+/* One real incomplete DATA observation. The RX fields and outbox bytes come
+ * from the same synchronous SDK callback; separate high-water values are not
+ * combined. Complete owners detached for wiping/freeing are excluded. */
+typedef struct {
+    uint64_t rx_peak_uptime_ms, rx_peak_observed_until_uptime_ms, last_outbox_full_uptime_ms;
+    uint32_t runtime_instance, complete_owner_count, complete_payload_bytes;
+    uint32_t partial_declared_bytes, partial_received_bytes, owned_request_bytes;
+    uint32_t outbox_wire_bytes_at_rx_peak, outbox_full_count, last_outbox_full_payload_bytes;
+    uint32_t notice_count_high_water, notice_full_count;
+    uint32_t owned_message_metadata_bytes, observation_storage_bytes;
+    bool rx_peak_valid, counters_valid;
+} emqtt_capacity_stats_t;
+/* Owner-only bounded copy. Never enters the SDK API lock or reads the outbox. */
+bool emqtt_get_capacity_snapshot(const emqtt_runtime_t *runtime, emqtt_capacity_stats_t *out);

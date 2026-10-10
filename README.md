@@ -47,6 +47,10 @@ ESP32-C3 与 ESP32-D0WD-V3 分别以 IDF target `esp32c3`、`esp32` 构建，均
 
 运行对象仅保留运行期间实际需要的 TLS 策略、期望订阅和按实际长度申请的 CA。官方核心在创建时复制地址、身份、凭据及遗嘱，CA 则借用到 client 销毁；运行层在 SDK 销毁成功后清零释放证书。公开 config、八个订阅和消息／outbox 限额保持原值。官方 C3 编译器确认运行对象由 8056 降到 2416 字节，另加实际 CA；软件、双目标编译与实板容量的范围分别见[常驻配置所有权检查点](docs/verification/mqtt-owned-config-checkpoint.md)。
 
+`emqtt_get_capacity_snapshot` 由现有 owner 复制固定观测，不等待 SDK 锁。真实未完成 DATA 回调在同一 SDK API 锁持有期内读取 outbox wire 字节，在短资源锁内扫描最多三个完整 owner 和当前 partial 的真实请求字节；按请求总字节、同大小时按 outbox 字节选择一个共同 tuple，不拼接独立高水位。`rx_peak_uptime_ms`／`rx_peak_observed_until_uptime_ms` 包住实际扫描，时钟、SDK getter、分配和擦除释放均在短锁外。完整消息先脱离指针槽再擦除释放，正在释放的对象不计入队列 tuple，因此结果可能保守少计。
+
+观测另保存原 `ESP_ERR_EMQTT_OUTBOX_FULL` 的次数、请求载荷和时刻，以及 notice 队列真实采样高水位和原 post 失败次数；失败计数不表示一次完整最大合法 outbox，notice 采样可能漏过瞬时高水位。stop 保留本实例历史，destroy 后新实例递增编号并从空历史开始；计数饱和永久标记失效。32-bit 目标的固定观测为80 B，另有资源锁和全局4 B实例编号；运行对象的实际 padding、回调局部变量和调用方 copy 栈必须由新目标 ELF／map／HWM重新核算，前述2416 B为添加观测前的历史对象。输入载荷、outbox wire、分配器元数据和观测成本分别计量，软件 fake 不授实体峰值或 Base 容量资格。
+
 - [运行层与测试](tests/README.md)
 - [入站消息体存活期与资源边界](docs/verification/mqtt-inbound-message-lifetime.md)
 - [来源归属与差异盘点](docs/design/source-provenance.md)
