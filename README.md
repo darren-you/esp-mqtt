@@ -1,5 +1,7 @@
 # ESP MQTT
 
+本组件目前由消费者按完整 Git 提交与 Component Manager 锁装配源码，host 静态库和实验样例属于验证／组合构建，没有独立生产二进制分发入口。源码清单归一不代表消费者已经升级，也不改变原锁定提交、上游版本或历史测试结果；真实固件仍由所属产品负责版本、构建号和签名验收。
+
 组件清单现排除 Git 子模块的 `.git` 定位文件，防止缓存路径改变同一源码 SHA 的制品摘要。官方 Component Manager 的正负控制与跨缓存验证见[组件摘要检查点](docs/verification/component-hash-reproducibility.md)；运行源码与既有 C3 实板证据保持其原始版本边界。
 
 `esp-mqtt` 是从官方 ESP-MQTT v1.1.0 固定提交 `1a1e5788a5cf57a0f44a3c6c061407f6c9be1026` 派生的独立 ESP-IDF `mqtt` 组件。官方 MQTT 编解码与 QoS 主体保留上游源码与历史；本仓在断线时精确清理 clean session 未确认的订阅控制报文，并保留 QoS 发布重试。新增通用 `emqtt_` 运行接口负责有界配置、订阅就绪、事件副本、分片重组与生命周期；入站片通常直接写入预留消息槽，三槽占满时为第四条在途消息临时分配一个消息缓冲，[C3 字节账本与验证](docs/verification/c3-low-memory.md)记录常驻申请与动态峰值。上游许可为 Apache-2.0，来源和逐层差异见[来源归属与差异盘点](docs/design/source-provenance.md)。Base 已删除原通用运行层，并在普通固件接入 MQTT owner 与设备命令；C3 已在同一独立实验镜像上完成 30 个网络场景组与 100 次实例销毁重建；Base 的真实业务 ACK、ESP32 同候选矩阵、原生业务组合与正式交付仍待完成。
@@ -39,7 +41,7 @@ host 测试需要 C11 编译器，启用 ASan/UBSan；运行层测试直接包�
 
 ESP32-C3 与 ESP32-D0WD-V3 分别以 IDF target `esp32c3`、`esp32` 构建，均须用 `sdk-lock.json` 的公开 ESP-IDF fork `578cf89c343e388db43ba1f4ddcd602fedcb763c` 和 `esp-lwip` `2758df4cd3666b3b2a5b53830148379326425c0d`；fork 从官方 `fff9895c82d744c7237be8847347bdd1b07c6643` 派生，依次修复 `esp_ota_begin` 擦除失败后的句柄泄漏和 HTTP 客户端初始化失败时的传输句柄泄漏。[SDK 准备与检查](tools/README.md)只操作显式独立 checkout。正式 SDK 同时采用组件锁定的 ESP Base 容量统计派生：本组件只保存唯一 recipe 的公开来源、精确提交与摘要，不复制修改清单。SDK 根 `esp-sdk-derivation.json` 须与冻结 recipe 逐字相同；组件 CMake 的本仓 reader 先核完整清单，再核 IDF／lwIP／TLSF 的真实提交、原文与派生字节、索引和全部子模块，不接受旧 SDK、部分或额外修改、清单漂移或外部 lwIP 组件覆盖。检查不下载、不执行 SDK 脚本，也不依赖相邻 Base checkout；SDK 输入通过与业务组合容量、实板和正式发行分别验收。调用方最终配置须启用 `CONFIG_MQTT_REPORT_DELETED_MESSAGES=y` 与 `CONFIG_MBEDTLS_HAVE_TIME_DATE=y`，且 MQTT 事件队列保持单项同步分发，确保官方 DATA 借用指针在回调内复制；普通固件禁止 `CONFIG_EMQTT_PLAINTEXT_LAB`，生产连接需要 CA、主机名和调用方建立的可信时间。[C3 编译检验](tests/c3-smoke/README.md)的历史候选已在固定 SDK 下成功生成镜像，只核对组件/接口编译和链接。[独立 Broker 样例](examples/broker-client/README.md)提供双目标隔离构建、RAM Wi-Fi、SNTP、严格 TLS、固定测试 Topic 与生命周期命令；本轮双目标构建证据见 [P3 Broker 软件准备记录](docs/verification/p3-broker-preparation.md)，两台实板 Broker 矩阵仍待验证。
 
-`idf_component.yml` 的 `0.1.0` 是第一方组件版本，区别于官方上游 v1.1.0；当前公开源码不等于已完成组件发行或设备验收。消费者须从公开维护仓固定完整提交，不能读取本工作区 checkout、`harness/external` 或 Base 的 `managed_components`。`esp-base@a0eabdf` 已删除旧 `mqtt_runtime` 与 Registry 重复依赖，隔离实验应用直接消费本仓；`esp-base@ecf1539` 后普通固件已接入 MQTT owner 与设备命令，真实 Broker/设备 ACK 和迁移仍待验收。工作区已登记本仓 gitlink，后续版本升级须与真实消费提交一致。
+`idf_component.yml` 的 `1.0.0` 是第一方组件版本，区别于官方上游 v1.1.0；当前公开源码不等于已完成组件发行或设备验收。消费者须从公开维护仓固定完整提交，不能读取本工作区 checkout、`harness/external` 或 Base 的 `managed_components`。`esp-base@a0eabdf` 已删除旧 `mqtt_runtime` 与 Registry 重复依赖，隔离实验应用直接消费本仓；`esp-base@ecf1539` 后普通固件已接入 MQTT owner 与设备命令，真实 Broker/设备 ACK 和迁移仍待验收。工作区已登记本仓 gitlink，后续版本升级须与真实消费提交一致。
 
 公开入站上限保持 4096 字节；出站上限为 5120 字节，使调用方能够发布含完整版本正文和状态元数据的有界文档。出站仍由官方 outbox 复制与限额管理，不扩大入站消息或事件队列；最大出站报文增加的堆峰值需要实板单独测量。host 边界回归和 Linux QoS1 场景覆盖该上限、逐字节 Broker 核对与丢 ACK 后的原 ID／DUP 重传。
 
