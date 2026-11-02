@@ -59,7 +59,7 @@ EMQTT_TEST_POLL_MS=50 bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-enqueu
 
 这是受控入队时机的延迟复现，不是自然负载的平均延迟。输出 `latency.json` 还记录 3 秒空闲期间的整个 Linux 测试进程 CPU 时间和轮询次数；它们不是 ESP 功耗或 CPU 测量。端到端吞吐包含真实宿主调度、TCP 和回复处理开销，不能直接外推设备、TLS、公网 Broker、Flash 写入或 OTA 总期限资格。启用自定义配置时，消费者仍须核对全部生成配置与实际预处理结果，防止把其他配置变化误归因于轮询参数。
 
-`receive-fragments` 以 50 ms 轮询运行真实核心，延迟发送首个接收缓冲、固定报头及多字节 remaining length。分片有实际进展时允许整包超过 3 秒；停在半个报头且无进展时按配置的 3 秒网络期限断开，随后重连并逐字节交付下一包。同步发送心跳并检查每次异步入队不超过 250 ms，避免用持锁阻塞读掩盖提前断线。该场景只覆盖报头与首个接收缓冲的非阻塞路径；大 PUBLISH 后续 DATA 片的既有读取路径、TLS 与实板负载须分别验证。
+`receive-fragments` 以 50 ms 轮询运行真实核心，延迟发送首个接收缓冲、固定报头、多字节 remaining length 及大 PUBLISH 后续 DATA 片。分片有实际进展时允许整包超过 3 秒；分别停在载荷中部和半个报头且无进展时，按配置的 3 秒网络期限断开，另覆盖载荷中途 EOF；未完成报文不能收到 PUBACK，重连后须逐字节交付下一包。同步发送心跳并检查每次异步入队不超过 250 ms，避免用持锁阻塞读掩盖提前断线。每次使用尚未生成 sdkconfig 的独立输出目录；设 `EMQTT_FRAGMENT_TOPIC_ALL=1` 可验证所有 DATA 片都携带 Topic 的配置及断开后的清理。真实 TCP 结果不代替 TLS、MQTT 5 或实板负载验收。
 
 新版通过和旧版复现的精确对照见[订阅控制报文断线回归](../docs/verification/mqtt-control-reconnect-linux.md)。
 [QoS1 ACK 与重投回归](../docs/verification/mqtt-qos1-ack-linux.md)记录独立真实核心场景及事件语义。

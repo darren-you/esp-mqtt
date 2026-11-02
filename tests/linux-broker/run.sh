@@ -50,7 +50,16 @@ if [[ "$scenario" == enqueue-latency ]]; then
   fi
 fi
 if [[ "$scenario" == receive-fragments ]]; then
+  if [[ -e "$output_dir/sdkconfig" ]]; then
+    printf 'receive-fragments 要求尚未生成 sdkconfig 的独立输出目录\n' >&2
+    exit 2
+  fi
   printf '\nCONFIG_FREERTOS_HZ=100\nCONFIG_MQTT_USE_CUSTOM_CONFIG=y\nCONFIG_MQTT_POLL_READ_TIMEOUT_MS=50\nCONFIG_MQTT_EVENT_QUEUE_SIZE=1\n' >> "$project_dir/sdkconfig.defaults"
+  case "${EMQTT_FRAGMENT_TOPIC_ALL:-0}" in
+    0) ;;
+    1) printf 'CONFIG_MQTT_TOPIC_PRESENT_ALL_DATA_EVENTS=y\n' >> "$project_dir/sdkconfig.defaults" ;;
+    *) printf 'EMQTT_FRAGMENT_TOPIC_ALL 仅支持 0、1\n' >&2; exit 2 ;;
+  esac
 fi
 cp -- "$harness_dir/main/CMakeLists.txt" "$project_dir/main/"
 if [[ "$scenario" == receive-fragments ]]; then
@@ -72,6 +81,12 @@ idf.py -C "$project_dir" -B "$output_dir/build" \
   -D ESP_MQTT_COMPONENT_DIR="$output_dir/mqtt" build
 if [[ "$scenario" == receive-fragments ]]; then
   grep -qx 'CONFIG_MQTT_POLL_READ_TIMEOUT_MS=50' "$output_dir/sdkconfig"
+  grep -qx 'CONFIG_MQTT_EVENT_QUEUE_SIZE=1' "$output_dir/sdkconfig"
+  if [[ "${EMQTT_FRAGMENT_TOPIC_ALL:-0}" == 1 ]]; then
+    grep -qx 'CONFIG_MQTT_TOPIC_PRESENT_ALL_DATA_EVENTS=y' "$output_dir/sdkconfig"
+  else
+    grep -qx '# CONFIG_MQTT_TOPIC_PRESENT_ALL_DATA_EVENTS is not set' "$output_dir/sdkconfig"
+  fi
   python3 "$harness_dir/run_receive_fragments_test.py" \
     --app "$output_dir/build/esp_mqtt_linux_broker_probe.elf"
 elif [[ "$scenario" == enqueue-latency ]]; then

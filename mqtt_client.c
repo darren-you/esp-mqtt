@@ -41,6 +41,7 @@ static esp_err_t esp_mqtt_connect(esp_mqtt_client_handle_t client, int timeout_m
 static void esp_mqtt_abort_connection(esp_mqtt_client_handle_t client);
 static esp_err_t esp_mqtt_client_ping(esp_mqtt_client_handle_t client);
 static int mqtt_message_receive(esp_mqtt_client_handle_t client, int read_poll_timeout_ms);
+static void mqtt_reset_receive(esp_mqtt_client_handle_t client);
 static void esp_mqtt_client_dispatch_transport_error(esp_mqtt_client_handle_t client);
 static esp_err_t send_disconnect_msg(esp_mqtt_client_handle_t client);
 
@@ -761,6 +762,7 @@ _mqtt_set_config_failed:
 
 void esp_mqtt_destroy_config(esp_mqtt_client_handle_t client)
 {
+    mqtt_reset_receive(client);
     if (client->config == NULL) {
         return;
     }
@@ -805,6 +807,19 @@ static inline bool has_timed_out(uint64_t last_tick, uint64_t timeout)
 {
     uint64_t next = last_tick + timeout;
     return (int64_t)(next - platform_tick_get_ms()) <= 0;
+}
+
+static void mqtt_reset_receive(esp_mqtt_client_handle_t client)
+{
+#ifdef CONFIG_MQTT_TOPIC_PRESENT_ALL_DATA_EVENTS
+    free(client->mqtt_state.receive_publish_topic);
+    client->mqtt_state.receive_publish_topic = NULL;
+    client->mqtt_state.receive_publish_topic_length = 0;
+#endif
+    client->mqtt_state.receive_publish_in_progress = false;
+    client->mqtt_state.in_buffer_read_len = 0;
+    client->mqtt_state.message_length = 0;
+    client->mqtt_state.receive_progress_tick = 0;
 }
 
 static esp_err_t process_keepalive(esp_mqtt_client_handle_t client)
@@ -1034,6 +1049,7 @@ static void esp_mqtt_abort_connection(esp_mqtt_client_handle_t client)
     client->event.event_id = MQTT_EVENT_DISCONNECTED;
     client->wait_for_ping_resp = false;
     esp_mqtt_dispatch_event_with_msgid(client);
+    mqtt_reset_receive(client);
     MQTT_API_UNLOCK(client);
 }
 
@@ -1319,106 +1335,114 @@ static esp_err_t esp_mqtt_dispatch_event(esp_mqtt_client_handle_t client)
     return ret;
 }
 
+static void dispatch_publish_data(esp_mqtt_client_handle_t client, char *topic, size_t topic_len,
+                                  char *data, size_t data_len, size_t offset)
+{
+    uint8_t *header = &client->mqtt_state.receive_publish_header;
+    client->event.event_id = MQTT_EVENT_DATA;
+    client->event.msg_id = client->mqtt_state.receive_publish_id;
+    client->event.retain = mqtt_get_retain(header);
+    client->event.qos = mqtt_get_qos(header);
+    client->event.dup = mqtt_get_dup(header);
+    client->event.total_data_len = client->mqtt_state.receive_publish_data_length;
+    client->event.current_data_offset = offset;
+    client->event.data = data_len ? data : NULL;
+    client->event.data_len = data_len;
+    client->event.topic = topic;
+    client->event.topic_len = topic_len;
+    esp_mqtt_dispatch_event(client);
+}
+
 static esp_err_t deliver_publish(esp_mqtt_client_handle_t client)
 {
-    uint8_t *msg_buf = client->mqtt_state.in_buffer;
-    size_t msg_read_len = client->mqtt_state.in_buffer_read_len;
-    size_t msg_total_len = client->mqtt_state.message_length;
-    size_t msg_topic_len = msg_read_len;
-    size_t msg_data_len = msg_read_len;
-    size_t msg_data_offset = 0;
-    size_t saved_msg_topic_len = 0;
-    char *saved_msg_topic = NULL;
-    char *msg_topic = NULL;
-    char *msg_data = NULL;
-
-    if (client->mqtt_state.connection.information.protocol_ver == MQTT_PROTOCOL_V_5) {
+    if (!client->mqtt_state.receive_publish_in_progress) {
+        uint8_t *msg_buf = client->mqtt_state.in_buffer;
+        size_t msg_read_len = client->mqtt_state.in_buffer_read_len;
+        size_t msg_topic_len = msg_read_len;
+        size_t msg_data_len = msg_read_len;
+        char *msg_topic = NULL;
+        char *msg_data = NULL;
+        if (client->mqtt_state.connection.information.protocol_ver == MQTT_PROTOCOL_V_5) {
 #ifdef MQTT_PROTOCOL_5
 
-        if (esp_mqtt5_get_publish_data(client, msg_buf, msg_read_len, &msg_topic, &msg_topic_len, &msg_data,
-                                       &msg_data_len) != ESP_OK) {
-            ESP_LOGE(TAG, "%s: esp_mqtt5_get_publish_data() failed", __func__);
-            return ESP_FAIL;
-        }
+            if (esp_mqtt5_get_publish_data(client, msg_buf, msg_read_len, &msg_topic, &msg_topic_len, &msg_data,
+                                           &msg_data_len) != ESP_OK) {
+                ESP_LOGE(TAG, "%s: esp_mqtt5_get_publish_data() failed", __func__);
+                return ESP_FAIL;
+            }
 
 #endif
-    } else {
-        msg_topic = mqtt_get_publish_topic(msg_buf, &msg_topic_len);
+        } else {
+            msg_topic = mqtt_get_publish_topic(msg_buf, &msg_topic_len);
 
-        if (msg_topic == NULL) {
-            ESP_LOGE(TAG, "%s: mqtt_get_publish_topic() failed", __func__);
-            return ESP_FAIL;
+            if (msg_topic == NULL) {
+                ESP_LOGE(TAG, "%s: mqtt_get_publish_topic() failed", __func__);
+                return ESP_FAIL;
+            }
+
+            ESP_LOGD(TAG, "%s: msg_topic_len=%"NEWLIB_NANO_COMPAT_FORMAT, __func__, NEWLIB_NANO_COMPAT_CAST(msg_topic_len));
+            // get payload
+            msg_data = mqtt_get_publish_data(msg_buf, &msg_data_len);
+
+            if (msg_data_len > 0 && msg_data == NULL) {
+                ESP_LOGE(TAG, "%s: mqtt_get_publish_data() failed", __func__);
+                return ESP_FAIL;
+            }
         }
 
-        ESP_LOGD(TAG, "%s: msg_topic_len=%"NEWLIB_NANO_COMPAT_FORMAT, __func__, NEWLIB_NANO_COMPAT_CAST(msg_topic_len));
-        // get payload
-        msg_data = mqtt_get_publish_data(msg_buf, &msg_data_len);
-
-        if (msg_data_len > 0 && msg_data == NULL) {
-            ESP_LOGE(TAG, "%s: mqtt_get_publish_data() failed", __func__);
-            return ESP_FAIL;
-        }
-    }
-
-    client->event.retain = mqtt_get_retain(msg_buf);
-
-    if (client->mqtt_state.connection.information.protocol_ver == MQTT_PROTOCOL_V_5) {
+        client->mqtt_state.receive_publish_header = *msg_buf;
+        if (client->mqtt_state.connection.information.protocol_ver == MQTT_PROTOCOL_V_5) {
 #ifdef MQTT_PROTOCOL_5
-        client->event.msg_id = mqtt5_get_id(msg_buf, msg_read_len);
+            client->mqtt_state.receive_publish_id = mqtt5_get_id(msg_buf, msg_read_len);
 #endif
-    } else {
-        client->event.msg_id = mqtt_get_id(msg_buf, msg_read_len);
-    }
-
-    client->event.qos = mqtt_get_qos(msg_buf);
-    client->event.dup = mqtt_get_dup(msg_buf);
-    client->event.total_data_len = msg_data_len + msg_total_len - msg_read_len;
-    bool send_event = true;
-
-    while (send_event) {
-        ESP_LOGD(TAG,
-                 "Get data len= %"NEWLIB_NANO_COMPAT_FORMAT", topic len=%"NEWLIB_NANO_COMPAT_FORMAT", total_data: %d offset: %"NEWLIB_NANO_COMPAT_FORMAT,
-                 NEWLIB_NANO_COMPAT_CAST(msg_data_len), NEWLIB_NANO_COMPAT_CAST(msg_topic_len),
-                 client->event.total_data_len, NEWLIB_NANO_COMPAT_CAST(msg_data_offset));
-        client->event.event_id = MQTT_EVENT_DATA;
-        client->event.data = msg_data_len > 0 ? msg_data : NULL;
-        client->event.data_len = msg_data_len;
-        client->event.current_data_offset = msg_data_offset;
-        client->event.topic = msg_topic;
-        client->event.topic_len = msg_topic_len;
-        esp_mqtt_dispatch_event(client);
-        send_event = false;
-
-        if (msg_read_len < msg_total_len) {
-            send_event = true;
+        } else {
+            client->mqtt_state.receive_publish_id = mqtt_get_id(msg_buf, msg_read_len);
+        }
+        client->mqtt_state.receive_publish_data_length = msg_data_len + client->mqtt_state.message_length - msg_read_len;
 #ifdef CONFIG_MQTT_TOPIC_PRESENT_ALL_DATA_EVENTS
-
-            if (!saved_msg_topic) {
-                saved_msg_topic = strndup(msg_topic, msg_topic_len);
-                ESP_MEM_CHECK(TAG, saved_msg_topic, return ESP_ERR_NO_MEM);
-                saved_msg_topic_len = msg_topic_len;
-            }
-
-#endif
-            size_t buf_len = client->mqtt_state.in_buffer_length;
-            msg_data = (char *)client->mqtt_state.in_buffer;
-            msg_topic = saved_msg_topic;
-            msg_topic_len = saved_msg_topic_len;
-            msg_data_offset += msg_data_len;
-            int ret = esp_transport_read(client->transport, (char *)client->mqtt_state.in_buffer,
-                                         msg_total_len - msg_read_len > buf_len ? buf_len : msg_total_len - msg_read_len,
-                                         client->config->network_timeout_ms);
-
-            if (ret <= 0) {
-                return esp_mqtt_handle_transport_read_error(ret, client, false) == 0 ? ESP_OK : ESP_FAIL;
-            }
-
-            msg_data_len = ret;
-            msg_read_len += msg_data_len;
+        if (msg_read_len < client->mqtt_state.message_length) {
+            client->mqtt_state.receive_publish_topic = strndup(msg_topic, msg_topic_len);
+            ESP_MEM_CHECK(TAG, client->mqtt_state.receive_publish_topic, return ESP_ERR_NO_MEM);
+            client->mqtt_state.receive_publish_topic_length = msg_topic_len;
         }
+#endif
+        client->mqtt_state.receive_publish_in_progress = true;
+        dispatch_publish_data(client, msg_topic, msg_topic_len, msg_data, msg_data_len, 0);
     }
 
-    free(saved_msg_topic);
+    while (client->mqtt_state.in_buffer_read_len < client->mqtt_state.message_length) {
+        size_t remaining = client->mqtt_state.message_length - client->mqtt_state.in_buffer_read_len;
+        size_t offset = client->mqtt_state.receive_publish_data_length - remaining;
+        size_t buf_len = client->mqtt_state.in_buffer_length;
+        int ret = esp_transport_read(client->transport, (char *)client->mqtt_state.in_buffer,
+                                     remaining > buf_len ? buf_len : remaining, 0);
+        if (ret <= 0) {
+            int result = esp_mqtt_handle_transport_read_error(ret, client, true);
+            if (result == -1 && !has_timed_out(client->mqtt_state.receive_progress_tick,
+                                              client->config->network_timeout_ms)) {
+                return ESP_ERR_NOT_FINISHED;
+            }
+            ESP_LOGE(TAG, "%s: incomplete publish payload", __func__);
+            return ESP_FAIL;
+        }
+        client->mqtt_state.receive_progress_tick = platform_tick_get_ms();
+        client->mqtt_state.in_buffer_read_len += ret;
+        char *topic = NULL;
+        size_t topic_len = 0;
+#ifdef CONFIG_MQTT_TOPIC_PRESENT_ALL_DATA_EVENTS
+        topic = client->mqtt_state.receive_publish_topic;
+        topic_len = client->mqtt_state.receive_publish_topic_length;
+#endif
+        dispatch_publish_data(client, topic, topic_len, (char *)client->mqtt_state.in_buffer, ret, offset);
+    }
+
+    /* Only a completely received PUBLISH may reach the PUBACK/PUBREC path. */
+#ifdef CONFIG_MQTT_TOPIC_PRESENT_ALL_DATA_EVENTS
+    free(client->mqtt_state.receive_publish_topic);
+    client->mqtt_state.receive_publish_topic = NULL;
+    client->mqtt_state.receive_publish_topic_length = 0;
+#endif
+    client->mqtt_state.receive_publish_in_progress = false;
     return ESP_OK;
 }
 
@@ -1645,46 +1669,53 @@ static esp_err_t mqtt_process_receive(esp_mqtt_client_handle_t client)
 {
     uint8_t msg_type = 0, msg_qos = 0;
     uint16_t msg_id = 0;
-    size_t previous_in_buffer_read_len = client->mqtt_state.in_buffer_read_len;
-    /* non-blocking receive in order not to block other tasks */
-    int recv = mqtt_message_receive(client, 0);
+    if (client->mqtt_state.receive_publish_in_progress) {
+        msg_type = MQTT_MSG_TYPE_PUBLISH;
+        msg_qos = mqtt_get_qos(&client->mqtt_state.receive_publish_header);
+        msg_id = client->mqtt_state.receive_publish_id;
+    } else {
+        size_t previous_in_buffer_read_len = client->mqtt_state.in_buffer_read_len;
+        /* non-blocking receive in order not to block other tasks */
+        int recv = mqtt_message_receive(client, 0);
 
-    if (client->mqtt_state.in_buffer_read_len > previous_in_buffer_read_len) {
-        client->mqtt_state.receive_progress_tick = platform_tick_get_ms();
-    }
+        if (client->mqtt_state.in_buffer_read_len > previous_in_buffer_read_len) {
+            client->mqtt_state.receive_progress_tick = platform_tick_get_ms();
+        }
 
-    if (recv == 0) {    // Timeout
-        return ESP_OK;
-    }
+        if (recv == 0) {    // Timeout
+            return ESP_OK;
+        }
 
-    if (recv == -1) {    // Mid-message timeout
-        /* An empty non-blocking poll is not the network idle deadline. Keep
-         * receiving while bytes arrive, without holding the API lock waiting
-         * for the remaining header or first buffer of the packet. */
-        if (has_timed_out(client->mqtt_state.receive_progress_tick, client->config->network_timeout_ms)) {
-            ESP_LOGE(TAG, "%s: Network timeout while reading MQTT message", __func__);
+        if (recv == -1) {    // Mid-message timeout
+            /* An empty non-blocking poll is not the network idle deadline. Keep
+             * receiving while bytes arrive, without holding the API lock waiting
+             * for the remaining header or first buffer of the packet. */
+            if (has_timed_out(client->mqtt_state.receive_progress_tick, client->config->network_timeout_ms)) {
+                ESP_LOGE(TAG, "%s: Network timeout while reading MQTT message", __func__);
+                return ESP_FAIL;
+            }
+
+            return ESP_OK;  // Treat as standard timeout (keep reading the message)
+        }
+
+        if (recv < 0) {     // Other error
+            ESP_LOGE(TAG, "%s: mqtt_message_receive() returned %d", __func__, recv);
             return ESP_FAIL;
         }
 
-        return ESP_OK;  // Treat as standard timeout (keep reading the message)
-    }
+        int read_len = client->mqtt_state.message_length;
+        // If the message was valid, get the type, quality of service and id of the message
+        msg_type = mqtt_get_type(client->mqtt_state.in_buffer);
+        msg_qos = mqtt_get_qos(client->mqtt_state.in_buffer);
 
-    if (recv < 0) {     // Other error
-        ESP_LOGE(TAG, "%s: mqtt_message_receive() returned %d", __func__, recv);
-        return ESP_FAIL;
-    }
-
-    int read_len = client->mqtt_state.message_length;
-    // If the message was valid, get the type, quality of service and id of the message
-    msg_type = mqtt_get_type(client->mqtt_state.in_buffer);
-    msg_qos = mqtt_get_qos(client->mqtt_state.in_buffer);
-
-    if (client->mqtt_state.connection.information.protocol_ver == MQTT_PROTOCOL_V_5) {
+        if (client->mqtt_state.connection.information.protocol_ver == MQTT_PROTOCOL_V_5) {
 #ifdef MQTT_PROTOCOL_5
-        msg_id = mqtt5_get_id(client->mqtt_state.in_buffer, read_len);
+            msg_id = mqtt5_get_id(client->mqtt_state.in_buffer, read_len);
 #endif
-    } else {
-        msg_id = mqtt_get_id(client->mqtt_state.in_buffer, read_len);
+        } else {
+            msg_id = mqtt_get_id(client->mqtt_state.in_buffer, read_len);
+        }
+
     }
 
     ESP_LOGD(TAG, "msg_type=%d, msg_id=%d", msg_type, msg_id);
@@ -1726,7 +1757,11 @@ static esp_err_t mqtt_process_receive(esp_mqtt_client_handle_t client)
                  NEWLIB_NANO_COMPAT_CAST(client->mqtt_state.in_buffer_read_len),
                  NEWLIB_NANO_COMPAT_CAST(client->mqtt_state.message_length));
 
-        if (deliver_publish(client) != ESP_OK) {
+        esp_err_t delivered = deliver_publish(client);
+        if (delivered == ESP_ERR_NOT_FINISHED) {
+            return ESP_OK;
+        }
+        if (delivered != ESP_OK) {
             ESP_LOGE(TAG, "Failed to deliver publish message id=%d", msg_id);
             return ESP_FAIL;
         }
@@ -2230,6 +2265,7 @@ static void esp_mqtt_task(void *pv)
 
     esp_transport_close(client->transport);
     outbox_delete_all_items(client->outbox);
+    mqtt_reset_receive(client);
     client->state = MQTT_STATE_DISCONNECTED;
     xEventGroupSetBits(client->status_bits, STOPPED_BIT);
 #if MQTT_TASK_STACK_ON_EXTERNAL_MEMORY

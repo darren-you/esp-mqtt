@@ -61,6 +61,14 @@ typedef struct mqtt_state {
     size_t message_length;
     size_t in_buffer_read_len;
     uint64_t receive_progress_tick;
+    size_t receive_publish_data_length;
+    uint16_t receive_publish_id;
+    uint8_t receive_publish_header;
+    bool receive_publish_in_progress;
+#ifdef CONFIG_MQTT_TOPIC_PRESENT_ALL_DATA_EVENTS
+    char *receive_publish_topic;
+    size_t receive_publish_topic_length;
+#endif
     mqtt_connection_t connection;
     uint16_t pending_msg_id;
     int pending_msg_type;

@@ -42,19 +42,19 @@ void app_main(void)
     while (esp_timer_get_time() < deadline) {
         while (emqtt_poll(runtime, &event)) {
             if (event.kind == EMQTT_EVENT_READY) {
-                if (++ready > 2 || (ready == 2 && (received != 3 || disconnected != 1)))
+                if (++ready > 4 || (ready > 1 && (received != ready + 1 || disconnected != ready - 1)))
                     fail(runtime, "unexpected_ready");
             } else if (event.kind == EMQTT_EVENT_DISCONNECTED) {
-                if (++disconnected != 1 || received != 3)
+                if (++disconnected > 3 || received != disconnected + 2)
                     fail(runtime, "early_partial_disconnect");
             } else if (event.kind == EMQTT_EVENT_ERROR) {
-                if (event.error != EMQTT_ERROR_TRANSPORT || received != 3)
+                if (event.error != EMQTT_ERROR_TRANSPORT || (received < 3 || received > 5))
                     fail(runtime, "unexpected_error");
             } else if (event.kind == EMQTT_EVENT_MESSAGE) {
                 const emqtt_message_t *message = &event.message;
-                const int ids[] = {201, 202, 203, 205};
-                const size_t lengths[] = {4096, 128, 4096, 128};
-                if (received >= 4 || message->message_id != ids[received] ||
+                const int ids[] = {201, 202, 203, 205, 207, 209};
+                const size_t lengths[] = {4096, 128, 4096, 128, 128, 128};
+                if (received >= 6 || message->message_id != ids[received] ||
                     message->length != lengths[received] || message->qos != 1 ||
                     message->retain || message->duplicate || strcmp(message->topic, "test/base"))
                     fail(runtime, "message_identity");
@@ -62,7 +62,7 @@ void app_main(void)
                     if (message->payload[i] != (uint8_t)(received + 1))
                         fail(runtime, "message_bytes");
                 printf("TEST RECEIVED id=%d bytes=%zu\n", ids[received], lengths[received]);
-                if (++received == 4) completed_at = esp_timer_get_time();
+                if (++received == 6) completed_at = esp_timer_get_time();
             }
         }
         const int64_t now = esp_timer_get_time();
@@ -78,7 +78,7 @@ void app_main(void)
             next_enqueue = now + 100000;
         }
         if (completed_at && now - completed_at > 300000) {
-            if (ready != 2 || disconnected != 1 || enqueued < 10 || emqtt_outbox_size(runtime))
+            if (ready != 4 || disconnected != 3 || enqueued < 10 || emqtt_outbox_size(runtime))
                 fail(runtime, "final_state");
             if (emqtt_destroy(runtime) != ESP_OK) fail(NULL, "destroy");
             printf("TEST PASS receive-fragments ready=%d disconnected=%d messages=%d enqueued=%d max_enqueue_us=%lld\n",
