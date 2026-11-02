@@ -44,6 +44,18 @@ bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-lifecycle lifec
 
 `lifecycle` 默认让同一 Linux 进程依次完成 100 次真实核心创建、初始与动态订阅、QoS1 PUBACK、Broker 强制断线、clean session 重连后重新订阅、UNSUBACK、显式停止和销毁；每轮连接由隔离 Broker 逐包核对。短轮次排错可设 `EMQTT_LIFECYCLE_COUNT=2`，正式记录使用默认 100。脚本记录每轮当前 RSS、macOS 默认 malloc zone 使用量与 0–255 范围内打开的 fd 数；这些采样和 Broker 连接数不能替代设备堆、任务、socket 与两板实测。见[真实核心百次 Broker 生命周期记录](../docs/verification/mqtt-linux-broker-lifecycle-100.md)。
 
+`enqueue-latency` 用真实核心、FreeRTOS 和回环 TCP Broker 比较异步入队后的发送等待。每组使用新的仓外输出目录：
+
+```bash
+EMQTT_TEST_POLL_MS=1000 bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-enqueue-1000 enqueue-latency
+EMQTT_TEST_POLL_MS=100 bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-enqueue-100 enqueue-latency
+EMQTT_TEST_POLL_MS=50 bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-enqueue-50 enqueue-latency
+```
+
+默认 1000 ms 组保持 `MQTT_USE_CUSTOM_CONFIG` 关闭；100/50 ms 组启用自定义配置并保持单项事件队列。测试只把 MQTT 编译目标的轮询调用接到记录 wrapper，等待及返回仍由真实 SDK transport 执行，不增加唤醒、模拟时钟或延迟。owner 在轮询已开始后入队，依次完成 12 个请求及每块 1024 B 的 QoS1 数据与 PUBACK；C 和 Python 明确使用同一 `CLOCK_MONOTONIC` 时钟域，保存入队、轮询起止、Broker 收包、PUBACK 和数据交付的时点。
+
+这是受控入队时机的延迟复现，不是自然负载的平均延迟。输出 `latency.json` 还记录 3 秒空闲期间的整个 Linux 测试进程 CPU 时间和轮询次数；它们不是 ESP 功耗或 CPU 测量。端到端吞吐包含真实宿主调度、TCP 和回复处理开销，不能直接外推设备、TLS、公网 Broker、Flash 写入或 OTA 总期限资格。启用自定义配置时，消费者仍须核对全部生成配置与实际预处理结果，防止把其他配置变化误归因于轮询参数。
+
 新版通过和旧版复现的精确对照见[订阅控制报文断线回归](../docs/verification/mqtt-control-reconnect-linux.md)。
 [QoS1 ACK 与重投回归](../docs/verification/mqtt-qos1-ack-linux.md)记录独立真实核心场景及事件语义。
 
