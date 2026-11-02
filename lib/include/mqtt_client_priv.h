@@ -60,6 +60,7 @@ typedef struct mqtt_state {
     int in_buffer_length;
     size_t message_length;
     size_t in_buffer_read_len;
+    uint64_t receive_progress_tick;
     mqtt_connection_t connection;
     uint16_t pending_msg_id;
     int pending_msg_type;

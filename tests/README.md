@@ -40,6 +40,7 @@ bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-unsub unsub-onl
 bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-qos1 qos1-ack
 bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-tls tls
 bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-lifecycle lifecycle
+bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-fragments receive-fragments
 ```
 
 输出目录放在仓外，每个场景使用独立目录。脚本通过组件 CMake 执行固定 SDK/lwIP 检查；`full` 与 `unsub-only` 核对新 clean session 的 Broker 订阅集、旧 SUB/UNSUB 不重放，以及混合 QoS1 PUBLISH 的 `DUP=1` 重发与 PUBACK。`qos1-ack` 使用 5120 字节出站载荷，由隔离 Broker 逐字节核对，独立核对同一连接丢 PUBACK 后按原 ID、原载荷和 `DUP=1` 重发，重复 PUBACK 只产生一次完成事件；还核对入站 QoS1 重投两次交付、两次回 PUBACK、断线后重发以及最终 outbox 清空。`tls` 关闭明文实验开关，在仅本机回环的临时 TLS Broker 上运行真实核心：正确 CA 与主机名完成 SUBACK/QoS1 PUBACK，错误 CA 与主机名均拒绝，可信时间未就绪时不启动。测试证书与密钥只在权限受限的仓外临时目录生成并在退出时删除。Linux 结果不代表两台 ESP 实板、实验 Wi-Fi、生产 Broker 或 P3-07 验收；详见 [TLS 回归记录](../docs/verification/mqtt-tls-linux.md)。
@@ -57,6 +58,8 @@ EMQTT_TEST_POLL_MS=50 bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-enqueu
 默认 1000 ms 组保持 `MQTT_USE_CUSTOM_CONFIG` 关闭；100/50 ms 组启用自定义配置并保持单项事件队列。测试只把 MQTT 编译目标的轮询调用接到记录 wrapper，等待及返回仍由真实 SDK transport 执行，不增加唤醒、模拟时钟或延迟。owner 在轮询已开始后入队，依次完成 12 个请求及每块 1024 B 的 QoS1 数据与 PUBACK；C 和 Python 明确使用同一 `CLOCK_MONOTONIC` 时钟域，保存入队、轮询起止、Broker 收包、PUBACK 和数据交付的时点。
 
 这是受控入队时机的延迟复现，不是自然负载的平均延迟。输出 `latency.json` 还记录 3 秒空闲期间的整个 Linux 测试进程 CPU 时间和轮询次数；它们不是 ESP 功耗或 CPU 测量。端到端吞吐包含真实宿主调度、TCP 和回复处理开销，不能直接外推设备、TLS、公网 Broker、Flash 写入或 OTA 总期限资格。启用自定义配置时，消费者仍须核对全部生成配置与实际预处理结果，防止把其他配置变化误归因于轮询参数。
+
+`receive-fragments` 以 50 ms 轮询运行真实核心，延迟发送首个接收缓冲、固定报头及多字节 remaining length。分片有实际进展时允许整包超过 3 秒；停在半个报头且无进展时按配置的 3 秒网络期限断开，随后重连并逐字节交付下一包。同步发送心跳并检查每次异步入队不超过 250 ms，避免用持锁阻塞读掩盖提前断线。该场景只覆盖报头与首个接收缓冲的非阻塞路径；大 PUBLISH 后续 DATA 片的既有读取路径、TLS 与实板负载须分别验证。
 
 新版通过和旧版复现的精确对照见[订阅控制报文断线回归](../docs/verification/mqtt-control-reconnect-linux.md)。
 [QoS1 ACK 与重投回归](../docs/verification/mqtt-qos1-ack-linux.md)记录独立真实核心场景及事件语义。

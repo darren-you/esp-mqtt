@@ -1649,13 +1649,19 @@ static esp_err_t mqtt_process_receive(esp_mqtt_client_handle_t client)
     /* non-blocking receive in order not to block other tasks */
     int recv = mqtt_message_receive(client, 0);
 
+    if (client->mqtt_state.in_buffer_read_len > previous_in_buffer_read_len) {
+        client->mqtt_state.receive_progress_tick = platform_tick_get_ms();
+    }
+
     if (recv == 0) {    // Timeout
         return ESP_OK;
     }
 
     if (recv == -1) {    // Mid-message timeout
-        if (previous_in_buffer_read_len == client->mqtt_state.in_buffer_read_len) {
-            // Report error only if didn't receive anything since previous iteration
+        /* An empty non-blocking poll is not the network idle deadline. Keep
+         * receiving while bytes arrive, without holding the API lock waiting
+         * for the remaining header or first buffer of the packet. */
+        if (has_timed_out(client->mqtt_state.receive_progress_tick, client->config->network_timeout_ms)) {
             ESP_LOGE(TAG, "%s: Network timeout while reading MQTT message", __func__);
             return ESP_FAIL;
         }

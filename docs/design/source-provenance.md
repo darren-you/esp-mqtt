@@ -31,6 +31,8 @@
 
 2026-09-24 在相同固定 SDK 的真实 Linux target 进一步复现核心生命周期缺陷：高优先级 owner 在 `start` 返回后立即停止时，worker 尚未设定运行标志；transport 创建失败会自行退出却无法经运行层回收；transport 注册失败时未入列表的句柄未释放。本次直接修改 `mqtt_client.c` 和 `lib/include/mqtt_client_priv.h`，前置启动状态、等待已创建任务退出、拒绝并发停止、报告初始化错误，并在注册失败时释放未转移所有权的 transport。`tests/linux-lifecycle` 使用真实核心、任务、队列和 TCP/TLS transport，只定点注入初始化/注册返回值；`master` 与 C3 分支分别回归，未改变 C3 专有消息缓冲策略。精确来源、复现和验证边界见[MQTT 生命周期与 transport OOM 回归](../verification/mqtt-lifecycle-transport-oom.md)。
 
+2026-11-02 的第一方接收修正直接修改 `mqtt_client.c` 与 `lib/include/mqtt_client_priv.h`：首个接收缓冲或报头尚未收全时，以实际字节进展刷新网络空闲期限，不能把一次无数据的非阻塞轮询当作超时。读取仍非阻塞；私有状态新增一个 `uint64_t` 时刻，目标结构体 padding 与固件资源须随消费者重新核算。`receive-fragments` 真实核心测试覆盖报头、首缓冲、超过网络期限但持续进展、空闲断开及重连；不声明改变后续 DATA 片的原读取路径。
+
 ## IDF/lwIP 与配置结论
 
 本轮读取的原 ESP-IDF checkout 位于固定 `fff9895...`，`git status --short` 为空，内含原 lwIP `c6f2f878e7b0f86033214b85547d579be43351e3`；没有发现 IDF 本体其他源码差异。已准备的独立 SDK 同为固定 IDF 提交，唯一故意工作树差异是 `components/lwip/lwip` 指向公开修正 `2758df4...`。`tools/sdk.py check` 已对这份独立 SDK 通过，组件 CMake 要求同一 SDK 和内建 lwIP 组件路径。此结论只覆盖本轮两份具体 checkout 与 MQTT 相关输入，不声称所有机器的 SDK 都相同。
