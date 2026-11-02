@@ -53,6 +53,8 @@ ESP32-C3 与 ESP32-D0WD-V3 分别以 IDF target `esp32c3`、`esp32` 构建，均
 
 观测另保存原 `ESP_ERR_EMQTT_OUTBOX_FULL` 的次数、请求载荷和时刻，以及 notice 队列真实采样高水位和原 post 失败次数；失败计数不表示一次完整最大合法 outbox，notice 采样可能漏过瞬时高水位。stop 保留本实例历史，destroy 后新实例递增编号并从空历史开始；计数饱和永久标记失效。32-bit 目标的固定观测为80 B，另有资源锁和全局4 B实例编号；运行对象的实际 padding、回调局部变量和调用方 copy 栈必须由新目标 ELF／map／HWM重新核算，前述2416 B为添加观测前的历史对象。输入载荷、outbox wire、分配器元数据和观测成本分别计量，软件 fake 不授实体峰值或 Base 容量资格。
 
+调用方可在实例停止时通过 `emqtt_set_capacity_observer` 安装一对有界回调，把实时接收 tuple 关联到自己的活动阶段。MQTT 在每次实际未完成 DATA 采样前后读取 `{valid, context_id, phase_id, call_id}`，只有身份稳定、全部 ID 非零且时钟／outbox／计数有效才交付新样本；相等或低于历史峰值的真实样本同样交付，读取历史统计不会触发回调。调用方负责一致发布、同一观察生命周期内不复用 call_id、阶段语义及固定样本存储。回调在 SDK API 锁内、资源锁外执行，只允许短数据复制或原子操作，不得打印、分配、阻塞、重入 MQTT 或保留借用样本指针。默认不安装，停止后可移除，成功销毁后不继承。运行对象增加三个指针，`observation_storage_bytes` 包含它们；两份上下文与新样本的栈成本、实际目标 padding 和时间开销仍须随生产候选实测，软件关联不自动证明真实 Flash 阶段同存。
+
 - [运行层与测试](tests/README.md)
 - [入站消息体存活期与资源边界](docs/verification/mqtt-inbound-message-lifetime.md)
 - [来源归属与差异盘点](docs/design/source-provenance.md)
@@ -64,4 +66,4 @@ ESP32-C3 与 ESP32-D0WD-V3 分别以 IDF target `esp32c3`、`esp32` 构建，均
 - [真实核心生命周期与 transport OOM 回归](docs/verification/mqtt-lifecycle-transport-oom.md)
 - [真实核心 Linux TLS 与证书拒绝回归](docs/verification/mqtt-tls-linux.md)
 - [真实核心百次 Broker 生命周期回归](docs/verification/mqtt-linux-broker-lifecycle-100.md)
-- [ESP 原生业务、FRP OTA 与双目标验证](https://github.com/darren-you/esp-base/blob/master/docs/operations/ota-allocation-diagnostic-checkpoint.md)
+- [ESP 原生业务、MQTT OTA 与双目标验证](https://github.com/darren-you/esp-base/blob/master/docs/operations/ota-allocation-diagnostic-checkpoint.md)

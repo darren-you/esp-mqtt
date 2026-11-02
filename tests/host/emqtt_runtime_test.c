@@ -24,6 +24,7 @@ static unsigned live_storage, storage_attempt, fail_storage_attempt;
 static unsigned critical_depth, outbox_reads;
 static int outbox_bytes = 123;
 static void (*before_message_free)(void);
+static void (*during_outbox_read)(void);
 void emqtt_test_enter_critical(portMUX_TYPE *mux) { assert(mux && !critical_depth); ++critical_depth; }
 void emqtt_test_exit_critical(portMUX_TYPE *mux) { assert(mux && critical_depth == 1); --critical_depth; }
 void *emqtt_test_calloc(size_t count, size_t size)
@@ -192,7 +193,14 @@ int esp_mqtt_client_enqueue(esp_mqtt_client_handle_t client, const char *topic, 
 }
 int esp_mqtt_client_get_outbox_size(esp_mqtt_client_handle_t client)
 {
-    assert(client == &sdk && !critical_depth); ++outbox_reads; return outbox_bytes;
+    assert(client == &sdk && !critical_depth);
+    ++outbox_reads;
+    if (during_outbox_read) {
+        void (*hook)(void) = during_outbox_read;
+        during_outbox_read = NULL;
+        hook();
+    }
+    return outbox_bytes;
 }
 
 static void emit(esp_mqtt_event_id_t kind, esp_mqtt_event_t event)
@@ -229,6 +237,144 @@ static void partial_during_free(void)
     assert(!callback_active && !critical_depth);
     emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 400, .topic = "unit/in", .topic_len = 7,
         .data = "x", .data_len = 1, .total_data_len = EMQTT_PAYLOAD_MAX, .qos = 1});
+}
+
+static emqtt_capacity_context_t activity, changed_activity, last_activity;
+static emqtt_capacity_sample_t last_sample;
+static unsigned activity_reads, activity_observations;
+static int observer_context;
+static void read_activity(void *context, emqtt_capacity_context_t *out)
+{
+    assert(context == &observer_context && callback_active && !critical_depth);
+    ++activity_reads;
+    *out = activity;
+}
+static void observe_activity(void *context, const emqtt_capacity_context_t *current,
+    const emqtt_capacity_sample_t *sample)
+{
+    assert(context == &observer_context && callback_active && !critical_depth);
+    assert(current->valid == 1 && current->context_id && current->phase_id && current->call_id);
+    assert(sample->runtime_instance && sample->finished_us >= sample->started_us);
+    ++activity_observations;
+    last_activity = *current;
+    last_sample = *sample;
+}
+static void change_activity(void) { activity = changed_activity; }
+static void reverse_clock(void) { --now_us; }
+static void activity_partial(int offset)
+{
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 500,
+        .topic = offset ? NULL : "unit/in", .topic_len = offset ? 0 : 7,
+        .data = "x", .data_len = 1, .total_data_len = 64,
+        .current_data_offset = offset, .qos = 1});
+}
+static void check_activity_observer(void)
+{
+    emqtt_config_t c = config();
+    emqtt_runtime_t *r = NULL;
+    assert(emqtt_set_capacity_observer(NULL, read_activity, observe_activity,
+        &observer_context) == ESP_ERR_INVALID_STATE);
+    assert(emqtt_create(&c, &r) == ESP_OK);
+    assert(emqtt_set_capacity_observer(r, read_activity, NULL, &observer_context) == ESP_ERR_INVALID_ARG);
+    assert(emqtt_set_capacity_observer(r, NULL, observe_activity, &observer_context) == ESP_ERR_INVALID_ARG);
+    current_task = 2;
+    assert(emqtt_set_capacity_observer(r, read_activity, observe_activity,
+        &observer_context) == ESP_ERR_INVALID_STATE);
+    current_task = 1;
+    assert(emqtt_set_capacity_observer(r, read_activity, observe_activity, &observer_context) == ESP_OK);
+    assert(emqtt_start(r, true, true) == ESP_OK);
+    connect_ready(r);
+    assert(emqtt_set_capacity_observer(r, NULL, NULL, NULL) == ESP_ERR_INVALID_STATE);
+    for (int i = 0; i < 3; ++i)
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 490 + i, .topic = "unit/in", .topic_len = 7,
+            .data = "x", .data_len = 1, .total_data_len = 1, .qos = 1});
+    assert(!activity_reads && !activity_observations); /* Complete DATA is not RX_MORE. */
+    activity_partial(0); /* Inactive has no attribution. */
+    assert(activity_reads == 2 && !activity_observations);
+    activity = (emqtt_capacity_context_t){1, 7, 3, 1};
+    outbox_bytes = 14000;
+    activity_partial(1);
+    assert(activity_observations == 1 && last_activity.call_id == 1);
+    assert(last_sample.complete_owner_count == 3 && last_sample.complete_payload_bytes == 3 &&
+        last_sample.partial_declared_bytes == 64 && last_sample.partial_received_bytes == 2 &&
+        last_sample.outbox_wire_bytes == 14000 &&
+        last_sample.owned_message_metadata_bytes == sizeof(emqtt_owned_message_t) &&
+        last_sample.owned_request_bytes == 67 + 4 * sizeof(emqtt_owned_message_t));
+    const uint32_t first_instance = last_sample.runtime_instance;
+    emqtt_capacity_stats_t peak;
+    assert(emqtt_get_capacity_snapshot(r, &peak));
+    assert(activity_observations == 1 && activity_reads == 4); /* Historical reads never callback. */
+    /* Every field participates: an ended call, new context, new stage or next
+     * same-stage call during the actual outbox/owner scan cannot be attributed. */
+    const emqtt_capacity_context_t changed[] = {{0, 7, 3, 10}, {1, 8, 3, 11}, {1, 7, 4, 12}, {1, 7, 3, 14}};
+    int offset = 2;
+    for (unsigned i = 0; i < sizeof changed / sizeof changed[0]; ++i) {
+        activity = (emqtt_capacity_context_t){1, 7, 3, 10 + i};
+        changed_activity = changed[i];
+        during_outbox_read = change_activity;
+        activity_partial(offset++);
+        assert(!during_outbox_read && activity_observations == 1);
+    }
+    /* A phase beginning after the first read is equally insufficient. */
+    activity = (emqtt_capacity_context_t){0};
+    changed_activity = (emqtt_capacity_context_t){1, 7, 3, 20};
+    during_outbox_read = change_activity;
+    activity_partial(offset++);
+    assert(activity_observations == 1);
+    const emqtt_capacity_context_t invalid[] = {{2, 7, 3, 21}, {1, 0, 3, 22}, {1, 7, 0, 23}, {1, 7, 3, 0}};
+    for (unsigned i = 0; i < sizeof invalid / sizeof invalid[0]; ++i) {
+        activity = invalid[i];
+        activity_partial(offset++);
+        assert(activity_observations == 1);
+    }
+    activity = (emqtt_capacity_context_t){1, 7, 4, 24};
+    activity_partial(offset++); /* Equal peak is still a new, real sample. */
+    assert(activity_observations == 2 && last_activity.phase_id == 4 && last_activity.call_id == 24);
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE);
+    outbox_bytes = 123;
+    activity_partial(offset++); /* Lower occupancy cannot be replaced by old peak. */
+    assert(activity_observations == 3 && last_sample.complete_owner_count == 2 &&
+        last_sample.complete_payload_bytes == 2 && last_sample.outbox_wire_bytes == 123 &&
+        last_sample.owned_request_bytes == 66 + 3 * sizeof(emqtt_owned_message_t));
+    assert(emqtt_get_capacity_snapshot(r, &peak) && peak.complete_owner_count == 3 &&
+        peak.outbox_wire_bytes_at_rx_peak == 14000);
+    stop_error = ESP_FAIL;
+    assert(emqtt_stop(r) == ESP_FAIL);
+    assert(emqtt_set_capacity_observer(r, NULL, NULL, NULL) == ESP_ERR_INVALID_STATE);
+    stop_error = ESP_OK;
+    assert(emqtt_stop(r) == ESP_OK);
+    assert(emqtt_set_capacity_observer(r, NULL, NULL, &observer_context) == ESP_OK);
+    const unsigned reads_before_restart = activity_reads;
+    assert(emqtt_start(r, true, true) == ESP_OK);
+    connect_ready(r);
+    activity_partial(0);
+    assert(activity_observations == 3 && activity_reads == reads_before_restart);
+    assert(emqtt_destroy(r) == ESP_OK);
+    /* Each invalid clock/outbox input permanently invalidates this instance's
+     * observation; later good data must not silently requalify it. */
+    for (int failure = 0; failure < 3; ++failure) {
+        assert(emqtt_create(&c, &r) == ESP_OK);
+        assert(emqtt_get_capacity_snapshot(r, &peak) && peak.runtime_instance > first_instance);
+        assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
+        activity_partial(0); /* A new runtime does not inherit the observer. */
+        assert(activity_observations == 3 && activity_reads == reads_before_restart);
+        assert(emqtt_stop(r) == ESP_OK);
+        assert(emqtt_set_capacity_observer(r, read_activity, observe_activity, &observer_context) == ESP_OK);
+        assert(emqtt_start(r, true, true) == ESP_OK); connect_ready(r);
+        now_us = failure == 0 ? -1 : 100000;
+        outbox_bytes = failure == 2 ? -1 : 123;
+        if (failure == 1) during_outbox_read = reverse_clock;
+        activity_partial(0);
+        assert(activity_observations == 3 && !during_outbox_read);
+        now_us = 100000; outbox_bytes = 123;
+        activity_partial(1);
+        assert(activity_observations == 3);
+        assert(emqtt_get_capacity_snapshot(r, &peak) && !peak.counters_valid);
+        assert(emqtt_destroy(r) == ESP_OK);
+        /* No installation inherited by the next create. */
+        activity_reads = reads_before_restart;
+    }
+    assert(!live_storage && !live_messages && !live_queues && !critical_depth);
 }
 
 int main(void)
@@ -778,6 +924,7 @@ int main(void)
     assert(emqtt_create(&c, &r) == ESP_OK);
     assert(emqtt_get_capacity_snapshot(r, &peak) && peak.runtime_instance > instance && !peak.rx_peak_valid);
     assert(emqtt_destroy(r) == ESP_OK && !live_storage && !live_messages && !critical_depth);
+    check_activity_observer();
     puts("  mqtt_runtime   passed (SDK event injection; not Broker/hardware acceptance)");
     return 0;
 }

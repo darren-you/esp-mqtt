@@ -4,6 +4,8 @@
 
 固定容量观测回归还核对三条4096 B加第四条 partial 的共同 tuple、较小输入配较大 outbox 不改写原峰值、真实 FULL 与 notice post 失败计数、owner copy 不调用 SDK，以及消息已清零待释放时插入回调不会扫描已脱离的旧对象。fake 拒绝短锁内时钟／SDK getter／分配／释放；这些测试只验证源码同步与生命周期，不证明实板调度能达到满状态。
 
+可选活动观测的定向回归在真实 tuple 扫描的 SDK getter 中注入阶段结束、context／phase／call 切换，核对前后身份不同不授予同存；无活动、迟开始、无效字段、负／倒退时钟和失败 outbox 亦不交付。有效同值与较低占用样本分别按真实值交付，不复用历史峰值；完整 DATA 和历史 getter 不调用 observer。回调断言位于资源锁外，安装／移除限定原 owner 与停止状态，失败 stop 不允许卸载，重新创建不继承回调。观察实例失效后不自动恢复资格；这些确定性交错不替代 FreeRTOS 并发或设备 Flash 同存实测。
+
 [ESP32 IRAM 溢出回归](iram-overflow/README.md)用 pure RAM app 在真实 ESP32 CPU、IRAM 与 FreeRTOS 上运行本仓接收实现，检查第四条完整消息无法入槽时是否停止会话并报告队列错误。client API／事件仍由 fake 注入，不代表 Broker、TLS 或 Base 联合负载验收；原版与修正版的实际对照见[检查点](../docs/verification/mqtt-iram-overflow-checkpoint.md)。
 
 配置所有权回归按官方 SDK 的实际边界模拟：地址、凭据与遗嘱复制，CA 指针借用。运行层保留自己的 CA；输入清零／复用、最大 4096 字节 CA 字符串、运行对象和 CA 申请失败、SDK 销毁失败后的证书存活及再次销毁均有定向检查，所有已拥有的存储在释放前清零。最大长度用例使用合成 PEM 标记验证存储边界；证书解析、主机名和重连另由下面的真实核心严格 TLS 场景核验。详见[常驻配置所有权检查点](../docs/verification/mqtt-owned-config-checkpoint.md)。

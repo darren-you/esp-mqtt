@@ -63,3 +63,42 @@ typedef struct {
 } emqtt_capacity_stats_t;
 /* Owner-only bounded copy. Never enters the SDK API lock or reads the outbox. */
 bool emqtt_get_capacity_snapshot(const emqtt_runtime_t *runtime, emqtt_capacity_stats_t *out);
+
+/* Caller-owned activity identity, unrelated to MQTT protocol or business data.
+ * valid must be 1 and every ID nonzero while an activity is live. A call_id
+ * must never be reused in the caller's observation lifetime (including across
+ * stop/start); exhaustion or ambiguous state must return an all-zero value.
+ * The provider must publish a coherent snapshot, not independent live fields. */
+typedef struct {
+    uint32_t valid, context_id, phase_id, call_id;
+} emqtt_capacity_context_t;
+
+/* A fresh incomplete-DATA tuple, never a copy of the stored historical peak.
+ * Times bound the resource scan and SDK outbox read, in boot microseconds.
+ * Detached owners being wiped/freed are excluded as in the historical stats. */
+typedef struct {
+    uint64_t started_us, finished_us;
+    uint32_t runtime_instance, complete_owner_count, complete_payload_bytes;
+    uint32_t partial_declared_bytes, partial_received_bytes, owned_request_bytes;
+    uint32_t outbox_wire_bytes, owned_message_metadata_bytes;
+} emqtt_capacity_sample_t;
+typedef void (*emqtt_capacity_read_context_t)(void *context, emqtt_capacity_context_t *out);
+typedef void (*emqtt_capacity_observe_t)(void *context,
+    const emqtt_capacity_context_t *activity, const emqtt_capacity_sample_t *sample);
+
+/* Owner-only, while stopped. Both callbacks NULL remove the observer; a single
+ * NULL callback is invalid. Caller context must outlive installation and all
+ * callbacks. A successful stop makes callbacks quiescent but retains the
+ * installation: before restart keep context alive or explicitly remove it.
+ * Successful destroy removes the installation. The SDK worker reads the activity
+ * before and after the real tuple; only an identical nonzero valid identity
+ * with a valid clock/outbox sample reaches observe. Every such sample is
+ * delivered, including ties and values below the stored historical peak.
+ *
+ * Callbacks run synchronously under the SDK API lock, outside the resource
+ * lock. They MUST be bounded, nonblocking and allocation-free; no logging,
+ * MQTT calls, retained sample pointers, or locks whose holders can call MQTT.
+ * No activity semantics or per-activity storage is owned by this component. */
+esp_err_t emqtt_set_capacity_observer(emqtt_runtime_t *runtime,
+    emqtt_capacity_read_context_t read_context, emqtt_capacity_observe_t observe,
+    void *context);

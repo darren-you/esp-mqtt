@@ -73,6 +73,9 @@ struct emqtt_runtime {
     int64_t subscription_deadline_us;
     portMUX_TYPE capacity_lock;
     emqtt_capacity_stats_t capacity;
+    emqtt_capacity_read_context_t capacity_read_context;
+    emqtt_capacity_observe_t capacity_observe;
+    void *capacity_context;
 };
 static emqtt_runtime_t *s_instance;
 static uint32_t s_runtime_instance;
@@ -108,8 +111,11 @@ static void capacity_note_partial(emqtt_runtime_t *r)
     /* DATA is synchronous and the SDK worker holds its recursive API lock.
      * Take the existing real outbox count before our short resource critical
      * section. No owner enqueue or worker expiry can change it in this callback. */
+    emqtt_capacity_context_t before = {0}, after = {0};
+    if (r->capacity_read_context) r->capacity_read_context(r->capacity_context, &before);
+    const int64_t started_us = esp_timer_get_time();
     const int outbox_bytes = esp_mqtt_client_get_outbox_size(r->client);
-    const uint64_t now_ms = (uint64_t)esp_timer_get_time() / 1000U;
+    const uint64_t now_ms = (uint64_t)started_us / 1000U;
     portENTER_CRITICAL(&r->capacity_lock);
     uint32_t complete = 0, payload = 0;
     for (unsigned i = 0; i < MESSAGE_SLOTS; ++i) {
@@ -123,9 +129,12 @@ static void capacity_note_partial(emqtt_runtime_t *r)
     portEXIT_CRITICAL(&r->capacity_lock);
     /* Bound the actual locked tuple without calling even the clock inside the
      * resource critical section. The SDK API lock still owns the outbox. */
-    const uint64_t observed_until_ms = (uint64_t)esp_timer_get_time() / 1000U;
+    const int64_t finished_us = esp_timer_get_time();
+    const uint64_t observed_until_ms = (uint64_t)finished_us / 1000U;
+    if (r->capacity_read_context) r->capacity_read_context(r->capacity_context, &after);
+    const bool sample_valid = outbox_bytes >= 0 && started_us >= 0 && finished_us >= started_us;
     portENTER_CRITICAL(&r->capacity_lock);
-    if (outbox_bytes < 0) r->capacity.counters_valid = false;
+    if (!sample_valid) r->capacity.counters_valid = false;
     else if (!r->capacity.rx_peak_valid || bytes > r->capacity.owned_request_bytes ||
              (bytes == r->capacity.owned_request_bytes &&
               (uint32_t)outbox_bytes > r->capacity.outbox_wire_bytes_at_rx_peak)) {
@@ -139,7 +148,22 @@ static void capacity_note_partial(emqtt_runtime_t *r)
         r->capacity.outbox_wire_bytes_at_rx_peak = (uint32_t)outbox_bytes;
         r->capacity.rx_peak_valid = true;
     }
+    const bool observation_valid = r->capacity.counters_valid;
     portEXIT_CRITICAL(&r->capacity_lock);
+    if (sample_valid && observation_valid && r->capacity_observe &&
+        before.valid == 1U && before.context_id && before.phase_id && before.call_id &&
+        after.valid == before.valid && after.context_id == before.context_id &&
+        after.phase_id == before.phase_id && after.call_id == before.call_id) {
+        const emqtt_capacity_sample_t sample = {
+            .started_us = (uint64_t)started_us, .finished_us = (uint64_t)finished_us,
+            .runtime_instance = r->capacity.runtime_instance,
+            .complete_owner_count = complete, .complete_payload_bytes = payload,
+            .partial_declared_bytes = declared, .partial_received_bytes = received,
+            .owned_request_bytes = bytes, .outbox_wire_bytes = (uint32_t)outbox_bytes,
+            .owned_message_metadata_bytes = sizeof(emqtt_owned_message_t),
+        };
+        r->capacity_observe(r->capacity_context, &before, &sample);
+    }
 }
 
 static void *emqtt_storage_calloc(size_t size)
@@ -415,7 +439,8 @@ esp_err_t emqtt_create(const emqtt_config_t *config, emqtt_runtime_t **out)
     if (r->capacity.counters_valid) ++s_runtime_instance;
     r->capacity.runtime_instance = s_runtime_instance;
     r->capacity.owned_message_metadata_bytes = sizeof(emqtt_owned_message_t);
-    r->capacity.observation_storage_bytes = sizeof(r->capacity) + sizeof(r->capacity_lock) + sizeof(s_runtime_instance);
+    r->capacity.observation_storage_bytes = sizeof(r->capacity) + sizeof(r->capacity_lock) + sizeof(s_runtime_instance) +
+        sizeof(r->capacity_read_context) + sizeof(r->capacity_observe) + sizeof(r->capacity_context);
     s_instance = r;
     *out = r;
     return ESP_OK;
@@ -428,6 +453,17 @@ fail:
     for (size_t i = 0; i < sizeof(*r); ++i) bytes[i] = 0;
     free(r);
     return failure;
+}
+
+esp_err_t emqtt_set_capacity_observer(emqtt_runtime_t *r,
+    emqtt_capacity_read_context_t read_context, emqtt_capacity_observe_t observe, void *context)
+{
+    if (!owned(r) || r->started) return ESP_ERR_INVALID_STATE;
+    if ((read_context == NULL) != (observe == NULL)) return ESP_ERR_INVALID_ARG;
+    r->capacity_read_context = read_context;
+    r->capacity_observe = observe;
+    r->capacity_context = read_context ? context : NULL;
+    return ESP_OK;
 }
 
 esp_err_t emqtt_start(emqtt_runtime_t *r, bool network_ready, bool trusted_time_ready)
