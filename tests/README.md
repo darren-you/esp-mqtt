@@ -4,6 +4,8 @@
 
 固定容量观测回归还核对三条4096 B加第四条 partial 的共同 tuple、较小输入配较大 outbox 不改写原峰值、真实 FULL 与 notice post 失败计数、owner copy 不调用 SDK，以及消息已清零待释放时插入回调不会扫描已脱离的旧对象。fake 拒绝短锁内时钟／SDK getter／分配／释放；这些测试只验证源码同步与生命周期，不证明实板调度能达到满状态。
 
+[ESP32 IRAM 溢出回归](iram-overflow/README.md)用 pure RAM app 在真实 ESP32 CPU、IRAM 与 FreeRTOS 上运行本仓接收实现，检查第四条完整消息无法入槽时是否停止会话并报告队列错误。client API／事件仍由 fake 注入，不代表 Broker、TLS 或 Base 联合负载验收；原版与修正版的实际对照见[检查点](../docs/verification/mqtt-iram-overflow-checkpoint.md)。
+
 配置所有权回归按官方 SDK 的实际边界模拟：地址、凭据与遗嘱复制，CA 指针借用。运行层保留自己的 CA；输入清零／复用、最大 4096 字节 CA 字符串、运行对象和 CA 申请失败、SDK 销毁失败后的证书存活及再次销毁均有定向检查，所有已拥有的存储在释放前清零。最大长度用例使用合成 PEM 标记验证存储边界；证书解析、主机名和重连另由下面的真实核心严格 TLS 场景核验。详见[常驻配置所有权检查点](../docs/verification/mqtt-owned-config-checkpoint.md)。
 
 `test/mqtt_outbox_host_test` 则在 IDF Linux host target 直接编译本仓真实 `lib/mqtt_outbox.c`。新增定向用例核对 clean session 断线需删除的已排队/已发送 SUBSCRIBE、UNSUBSCRIBE，及应保留的 QoS1 PUBLISH、PUBREL；该测试不能证明实际断线入口已调用清理函数，也不能证明 Broker 订阅集。

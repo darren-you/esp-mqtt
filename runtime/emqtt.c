@@ -6,7 +6,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
-#include <stdatomic.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,7 +62,7 @@ struct emqtt_runtime {
     /* Queue slots bound the number of complete messages; payload storage only
      * exists from the first DATA fragment until poll, stop, or rejection. */
     emqtt_owned_message_t *messages[MESSAGE_SLOTS];
-    atomic_bool overflow;
+    bool overflow;
     bool started;
     bool faulted;
     emqtt_state_t state;
@@ -77,6 +76,26 @@ struct emqtt_runtime {
 };
 static emqtt_runtime_t *s_instance;
 static uint32_t s_runtime_instance;
+
+/* ESP32 byte-accessible IRAM does not preserve atomic_exchange semantics.
+ * Use the existing short resource lock for this cross-task latch as well.
+ * IRAM storage is only enabled on the single-core ESP32; the SDK critical
+ * section there masks scheduling without an atomic operation on IRAM. */
+static void mark_overflow(emqtt_runtime_t *r)
+{
+    portENTER_CRITICAL(&r->capacity_lock);
+    r->overflow = true;
+    portEXIT_CRITICAL(&r->capacity_lock);
+}
+
+static bool take_overflow(emqtt_runtime_t *r)
+{
+    portENTER_CRITICAL(&r->capacity_lock);
+    const bool overflow = r->overflow;
+    r->overflow = false;
+    portEXIT_CRITICAL(&r->capacity_lock);
+    return overflow;
+}
 
 static void capacity_increment(emqtt_capacity_stats_t *stats, uint32_t *counter)
 {
@@ -172,7 +191,7 @@ static void release_message_slot(emqtt_runtime_t *r, int slot)
 {
     release_dynamic_message(detach_message_slot(r, slot));
     if (xQueueSend(r->free_slots, &slot, 0) != pdTRUE)
-        atomic_store(&r->overflow, true);
+        mark_overflow(r);
 }
 
 static void post(emqtt_runtime_t *r, const notice_t *notice)
@@ -187,7 +206,7 @@ static void post(emqtt_runtime_t *r, const notice_t *notice)
     portEXIT_CRITICAL(&r->capacity_lock);
     if (!posted) {
         if (notice->slot >= 0) release_message_slot(r, notice->slot);
-        atomic_store(&r->overflow, true);
+        mark_overflow(r);
     }
 }
 
@@ -211,7 +230,7 @@ static void release_receiver_slot(emqtt_runtime_t *r)
     portEXIT_CRITICAL(&r->capacity_lock);
     release_dynamic_message(message);
     if (slot >= 0 && xQueueSend(r->free_slots, &slot, 0) != pdTRUE)
-        atomic_store(&r->overflow, true);
+        mark_overflow(r);
 }
 
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -276,7 +295,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
                 if (r->receiver_slot >= 0)
                     (void)xQueueSend(r->free_slots, &r->receiver_slot, 0);
                 r->receiver_slot = -1;
-                atomic_store(&r->overflow, true);
+                mark_overflow(r);
                 return;
             }
             message->info.length = length;
@@ -300,7 +319,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
             if (r->receiver_slot < 0) {
                 if (xQueueReceive(r->free_slots, &n.slot, 0) != pdTRUE) {
                     release_receiver_slot(r);
-                    atomic_store(&r->overflow, true);
+                    mark_overflow(r);
                     return;
                 }
             } else {
@@ -331,7 +350,7 @@ static void drain(emqtt_runtime_t *r)
     }
     xQueueReset(r->free_slots);
     for (int i = 0; i < MESSAGE_SLOTS; ++i) (void)xQueueSend(r->free_slots, &i, 0);
-    atomic_store(&r->overflow, false);
+    (void)take_overflow(r);
     clear_pending(r);
     r->faulted = false;
 }
@@ -364,7 +383,6 @@ esp_err_t emqtt_create(const emqtt_config_t *config, emqtt_runtime_t **out)
         if (!r->ca_pem) goto fail;
         memcpy(r->ca_pem, config->ca_pem, r->ca_size_bytes);
     }
-    atomic_init(&r->overflow, false);
     r->receiver_slot = -1;
     r->notices = xQueueCreate(NOTICE_CAPACITY, sizeof(notice_t));
     r->free_slots = xQueueCreate(MESSAGE_SLOTS, sizeof(int));
@@ -484,7 +502,7 @@ static void fail_closed(emqtt_runtime_t *r)
 bool emqtt_poll(emqtt_runtime_t *r, emqtt_event_t *out)
 {
     if (!owned(r) || !out || r->faulted) return false;
-    if (atomic_exchange(&r->overflow, false)) {
+    if (take_overflow(r)) {
         /* 事件丢失后不能继续声称通道可用；由 owner 结束 SDK 回调再释放队列。 */
         fail_closed(r);
         memset(out, 0, sizeof(*out)); out->kind = EMQTT_EVENT_ERROR; out->error = EMQTT_ERROR_QUEUE;
