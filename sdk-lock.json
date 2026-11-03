@@ -11,8 +11,8 @@
   },
   "sdk_derivation": {
     "repository": "https://github.com/darren-you/esp-base.git",
-    "revision": "bac1b0f812f87a2466cefc7a230ddb4fb2abcbc2",
+    "revision": "e3ade50c82e267e83ca29dec0e2de728c354723d",
     "path": "sdk-lock.json",
-    "sha256": "aa30328518ba10db58f00fa11f04a04a63f8efca05d08e7ae6ced59d7694aa4d"
+    "sha256": "e016819ba2a1741db03d8582a10553d5bad070bb0c15b57b2dc267a8fbfbcb74"
   }
 }
