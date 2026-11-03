@@ -2057,6 +2057,7 @@ static void esp_mqtt_task(void *pv)
     uint64_t last_retransmit = 0;
     outbox_tick_t msg_tick = 0;
     while (client->run) {
+        bool receive_paused = false;
         MQTT_API_LOCK(client);
         run_event_loop(client);
         // delete long pending messages
@@ -2146,8 +2147,13 @@ static void esp_mqtt_task(void *pv)
                 break;
             }
 
-            // receive and process data
-            if (mqtt_process_receive(client) == ESP_FAIL) {
+            /* Admission applies only before a new packet. Even a partial
+             * fixed header must continue without consulting the owner again. */
+            receive_paused = client->mqtt_state.in_buffer_read_len == 0 &&
+                             !client->mqtt_state.receive_publish_in_progress &&
+                             client->receive_ready &&
+                             !client->receive_ready(client->receive_ready_context);
+            if (!receive_paused && mqtt_process_receive(client) == ESP_FAIL) {
                 esp_mqtt_abort_connection(client);
                 break;
             }
@@ -2256,7 +2262,11 @@ static void esp_mqtt_task(void *pv)
         MQTT_API_UNLOCK(client);
 
         if (MQTT_STATE_CONNECTED == client->state) {
-            if (esp_transport_poll_read(client->transport, max_poll_timeout(client, MQTT_POLL_READ_TIMEOUT_MS)) < 0) {
+            if (receive_paused) {
+                /* A readable socket would spin while the owner needs CPU and
+                 * this lock to finish its work and return a message slot. */
+                vTaskDelay(1);
+            } else if (esp_transport_poll_read(client->transport, max_poll_timeout(client, MQTT_POLL_READ_TIMEOUT_MS)) < 0) {
                 ESP_LOGE(TAG, "Poll read error: %d, aborting connection", errno);
                 esp_mqtt_abort_connection(client);
             }
@@ -2273,6 +2283,23 @@ static void esp_mqtt_task(void *pv)
 #else
     vTaskDelete(NULL);
 #endif
+}
+
+esp_err_t emqtt_client_set_receive_ready_callback(esp_mqtt_client_handle_t client,
+        emqtt_receive_ready_callback_t callback, void *context)
+{
+    if (!client || (!callback && context)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    MQTT_API_LOCK(client);
+    if (client->run || client->task_handle || client->stopping) {
+        MQTT_API_UNLOCK(client);
+        return ESP_ERR_INVALID_STATE;
+    }
+    client->receive_ready = callback;
+    client->receive_ready_context = context;
+    MQTT_API_UNLOCK(client);
+    return ESP_OK;
 }
 
 esp_err_t esp_mqtt_client_start(esp_mqtt_client_handle_t client)

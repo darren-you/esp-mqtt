@@ -16,6 +16,8 @@ static void *handler_arg;
 static bool started;
 static unsigned stopped;
 static int client_storage;
+static emqtt_receive_ready_callback_t receive_ready;
+static void *receive_ready_context;
 static emqtt_event_t out;
 
 static esp_mqtt_client_handle_t client(void)
@@ -26,7 +28,18 @@ static esp_mqtt_client_handle_t client(void)
 esp_mqtt_client_handle_t esp_mqtt_client_init(const esp_mqtt_client_config_t *cfg)
 {
     assert(cfg);
+    receive_ready = NULL;
+    receive_ready_context = NULL;
     return client();
+}
+
+esp_err_t emqtt_client_set_receive_ready_callback(esp_mqtt_client_handle_t c,
+    emqtt_receive_ready_callback_t cb, void *context)
+{
+    assert(c == client() && !started && cb && context);
+    receive_ready = cb;
+    receive_ready_context = context;
+    return ESP_OK;
 }
 
 esp_err_t esp_mqtt_client_register_event(esp_mqtt_client_handle_t c,
@@ -40,7 +53,7 @@ esp_err_t esp_mqtt_client_register_event(esp_mqtt_client_handle_t c,
 
 esp_err_t esp_mqtt_client_start(esp_mqtt_client_handle_t c)
 {
-    assert(c == client() && !started);
+    assert(c == client() && !started && receive_ready && receive_ready_context);
     started = true;
     return ESP_OK;
 }
@@ -56,6 +69,8 @@ esp_err_t esp_mqtt_client_stop(esp_mqtt_client_handle_t c)
 esp_err_t esp_mqtt_client_destroy(esp_mqtt_client_handle_t c)
 {
     assert(c == client() && !started);
+    receive_ready = NULL;
+    receive_ready_context = NULL;
     return ESP_OK;
 }
 
@@ -88,6 +103,8 @@ int esp_mqtt_client_get_outbox_size(esp_mqtt_client_handle_t c)
 
 static void emit(esp_mqtt_event_id_t id, esp_mqtt_event_t event)
 {
+    /* Deliberately bypass core admission: this fixture verifies defensive
+     * cleanup after impossible/hostile callback injection, not normal bursts. */
     assert(started);
     handler(handler_arg, "test", id, &event);
 }

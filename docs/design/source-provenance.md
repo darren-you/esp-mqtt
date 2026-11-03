@@ -33,6 +33,8 @@
 
 2026-11-02 的第一方接收修正直接修改 `mqtt_client.c` 与 `lib/include/mqtt_client_priv.h`：首个接收缓冲或报头尚未收全时，以实际字节进展刷新网络空闲期限，不能把一次无数据的非阻塞轮询当作超时。后继修正将大 PUBLISH 后续 DATA 片也改为非阻塞读取；空轮询返回主循环、释放 API 锁，保留原消息 ID、flags、总长度和偏移，只有完整收齐才发送 PUBACK／PUBREC。中途空闲到期、EOF、断开和停止清理接收状态；启用全片 Topic 配置时沿用按实际 Topic 长度分配，并在完成或清退时释放。私有状态增加时刻和续片元数据，目标 padding 与固件资源须随消费者重新核算。`receive-fragments` 真实核心测试覆盖报头、首缓冲、后续载荷、超过网络期限但持续进展、空闲断开、不确认截断报文及重连，不能代替 MQTT 5、TLS 或实板资格。
 
+2026-11-03 的第一方接收背压扩展直接维护在 `mqtt_client.c`、`include/mqtt_client.h` 与内部结构头：新增 `emqtt_client_set_receive_ready_callback`，仅无任务且未停止中时安装／移除，默认未安装保持原接收行为。MQTT 任务仅在真正新包边界询问回调，半固定头、remaining length 和 PUBLISH 后续片不受暂停影响；暂停时保留出站与原保活期限，并在 API 解锁后让出一 tick。`runtime/emqtt.c` 依据现有 free-slots 队列及正在接收的消息决定准入，防止三条完整消息待消费时继续开始第四包，不扩大队列或新增副本。客户端新增两个指针，32 位字段合计 8 B，循环另有局部布尔值；实际结构 padding、栈与固件资源须由新目标 ELF 和实测核算。旧 fake 注入溢出继续验证防御路径；新生产可达峰值及 TLS／TCP 缓冲须随消费者重新验收，不改写历史容量证据。
+
 ## IDF/lwIP 与配置结论
 
 本轮读取的原 ESP-IDF checkout 位于固定 `fff9895...`，`git status --short` 为空，内含原 lwIP `c6f2f878e7b0f86033214b85547d579be43351e3`；没有发现 IDF 本体其他源码差异。已准备的独立 SDK 同为固定 IDF 提交，唯一故意工作树差异是 `components/lwip/lwip` 指向公开修正 `2758df4...`。`tools/sdk.py check` 已对这份独立 SDK 通过，组件 CMake 要求同一 SDK 和内建 lwIP 组件路径。此结论只覆盖本轮两份具体 checkout 与 MQTT 相关输入，不声称所有机器的 SDK 都相同。

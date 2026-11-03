@@ -2,6 +2,8 @@
 
 验证单核 ESP32 将运行对象放入可按字节访问的 IRAM 时，第四条完整消息在三个槽仍满时必须停止 client、报告 `EMQTT_ERROR_QUEUE` 并进入 `EMQTT_FAILED`。测试直接编译本仓 `emqtt.c`，使用真实 CPU、分配器和 FreeRTOS 队列／临界区；官方 client API 与事件由小型 fake 注入，不连接 Broker，不代表 TLS、公网吞吐、并发调度或 Base 实板资格。
 
+当前正式核心会在三槽满时暂停开始下一包；本 fixture 故意绕过接收准入、直接注入第四条，用于保留溢出防御回归。它不证明正式背压路径会出现四个消息 owner 同存；真实协议行为使用 [Linux 背压测试](../README.md)。
+
 ## 构建
 
 从本仓根导出 `sdk-lock.json` 指向的 SDK 环境，将下列路径替换为新的仓外输出目录：

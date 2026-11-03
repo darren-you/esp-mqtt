@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 2 || $# -gt 3 ]]; then
-  printf '用法：%s <esp-mqtt 源目录> <仓外输出目录> [full|unsub-only|qos1-ack|tls|lifecycle|enqueue-latency|receive-fragments]\n' "$0" >&2
+  printf '用法：%s <esp-mqtt 源目录> <仓外输出目录> [full|unsub-only|qos1-ack|tls|lifecycle|enqueue-latency|receive-fragments|receive-backpressure]\n' "$0" >&2
   exit 2
 fi
 if [[ -z "${IDF_PATH:-}" ]] || ! command -v idf.py >/dev/null 2>&1; then
@@ -13,7 +13,7 @@ source_repo="$(cd -- "$1" && pwd -P)"
 mkdir -p -- "$2"
 output_dir="$(cd -- "$2" && pwd -P)"
 scenario="${3:-full}"
-if [[ "$scenario" != full && "$scenario" != unsub-only && "$scenario" != qos1-ack && "$scenario" != tls && "$scenario" != lifecycle && "$scenario" != enqueue-latency && "$scenario" != receive-fragments ]]; then
+if [[ "$scenario" != full && "$scenario" != unsub-only && "$scenario" != qos1-ack && "$scenario" != tls && "$scenario" != lifecycle && "$scenario" != enqueue-latency && "$scenario" != receive-fragments && "$scenario" != receive-backpressure ]]; then
   printf '未知 scenario\n' >&2
   exit 2
 fi
@@ -35,6 +35,7 @@ else
   cp -- "$harness_dir/sdkconfig.defaults" "$project_dir/sdkconfig.defaults"
 fi
 latency_test=OFF
+backpressure_test=OFF
 if [[ "$scenario" == enqueue-latency ]]; then
   latency_test=ON
   poll_ms="${EMQTT_TEST_POLL_MS:-1000}"
@@ -49,9 +50,9 @@ if [[ "$scenario" == enqueue-latency ]]; then
     printf 'CONFIG_MQTT_USE_CUSTOM_CONFIG=y\nCONFIG_MQTT_POLL_READ_TIMEOUT_MS=%s\nCONFIG_MQTT_EVENT_QUEUE_SIZE=1\n' "$poll_ms" >> "$project_dir/sdkconfig.defaults"
   fi
 fi
-if [[ "$scenario" == receive-fragments ]]; then
+if [[ "$scenario" == receive-fragments || "$scenario" == receive-backpressure ]]; then
   if [[ -e "$output_dir/sdkconfig" ]]; then
-    printf 'receive-fragments 要求尚未生成 sdkconfig 的独立输出目录\n' >&2
+    printf 'receive 测试要求尚未生成 sdkconfig 的独立输出目录\n' >&2
     exit 2
   fi
   printf '\nCONFIG_FREERTOS_HZ=100\nCONFIG_MQTT_USE_CUSTOM_CONFIG=y\nCONFIG_MQTT_POLL_READ_TIMEOUT_MS=50\nCONFIG_MQTT_EVENT_QUEUE_SIZE=1\n' >> "$project_dir/sdkconfig.defaults"
@@ -62,7 +63,10 @@ if [[ "$scenario" == receive-fragments ]]; then
   esac
 fi
 cp -- "$harness_dir/main/CMakeLists.txt" "$project_dir/main/"
-if [[ "$scenario" == receive-fragments ]]; then
+if [[ "$scenario" == receive-backpressure ]]; then
+  backpressure_test=ON
+  cp -- "$harness_dir/main/receive_backpressure_main.c" "$project_dir/main/main.c"
+elif [[ "$scenario" == receive-fragments ]]; then
   cp -- "$harness_dir/main/receive_fragments_main.c" "$project_dir/main/main.c"
 elif [[ "$scenario" == enqueue-latency ]]; then
   cp -- "$harness_dir/main/enqueue_latency_main.c" "$project_dir/main/main.c"
@@ -78,8 +82,14 @@ fi
 idf.py -C "$project_dir" -B "$output_dir/build" \
   -D SDKCONFIG="$output_dir/sdkconfig" \
   -D EMQTT_ENQUEUE_LATENCY_TEST="$latency_test" \
+  -D EMQTT_RECEIVE_BACKPRESSURE_TEST="$backpressure_test" \
   -D ESP_MQTT_COMPONENT_DIR="$output_dir/mqtt" build
-if [[ "$scenario" == receive-fragments ]]; then
+if [[ "$scenario" == receive-backpressure ]]; then
+  grep -qx 'CONFIG_MQTT_POLL_READ_TIMEOUT_MS=50' "$output_dir/sdkconfig"
+  grep -qx 'CONFIG_MQTT_EVENT_QUEUE_SIZE=1' "$output_dir/sdkconfig"
+  python3 "$harness_dir/run_receive_backpressure_test.py" \
+    --app "$output_dir/build/esp_mqtt_linux_broker_probe.elf"
+elif [[ "$scenario" == receive-fragments ]]; then
   grep -qx 'CONFIG_MQTT_POLL_READ_TIMEOUT_MS=50' "$output_dir/sdkconfig"
   grep -qx 'CONFIG_MQTT_EVENT_QUEUE_SIZE=1' "$output_dir/sdkconfig"
   if [[ "${EMQTT_FRAGMENT_TOPIC_ALL:-0}" == 1 ]]; then

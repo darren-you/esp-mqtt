@@ -34,6 +34,25 @@ typedef void *esp_event_handler_t;
 
 typedef struct esp_mqtt_client *esp_mqtt_client_handle_t;
 
+/** First-party emqtt extension: admission for the next inbound MQTT packet.
+ * Called from the MQTT task with its API lock held. The callback must not
+ * block, allocate, call MQTT APIs, or retain borrowed SDK pointers. Returning
+ * false leaves the next packet in the transport; partial packets continue.
+ * Outbound work and keepalive continue, so prolonged backpressure can still
+ * cause a normal keepalive timeout while inbound PINGRESP is deferred.
+ */
+typedef bool (*emqtt_receive_ready_callback_t)(void *context);
+
+/** Install or clear inbound admission only before start or after stop joined
+ * the MQTT task. The installation persists across stop/start: callback and
+ * context must remain valid while installed. After stop returns, clear or
+ * replace them before releasing context; destroy ends all callback use.
+ * A NULL callback requires NULL context and restores the default behavior.
+ * Returns ESP_ERR_INVALID_STATE while a task exists or is stopping.
+ */
+esp_err_t emqtt_client_set_receive_ready_callback(esp_mqtt_client_handle_t client,
+        emqtt_receive_ready_callback_t callback, void *context);
+
 #define MQTT_OVER_TCP_SCHEME "mqtt"
 #define MQTT_OVER_SSL_SCHEME "mqtts"
 #define MQTT_OVER_WS_SCHEME  "ws"

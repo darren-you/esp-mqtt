@@ -145,6 +145,8 @@ struct esp_mqtt_client {
     EventGroupHandle_t status_bits;
     SemaphoreHandle_t  api_lock;
     TaskHandle_t       task_handle;
+    emqtt_receive_ready_callback_t receive_ready;
+    void *receive_ready_context;
 #if MQTT_EVENT_QUEUE_SIZE > 1
     atomic_int         queued_events;
 #endif

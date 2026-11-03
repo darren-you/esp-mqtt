@@ -4,6 +4,8 @@
 
 固定容量观测回归还核对三条4096 B加第四条 partial 的共同 tuple、较小输入配较大 outbox 不改写原峰值、真实 FULL 与 notice post 失败计数、owner copy 不调用 SDK，以及消息已清零待释放时插入回调不会扫描已脱离的旧对象。fake 拒绝短锁内时钟／SDK getter／分配／释放；这些测试只验证源码同步与生命周期，不证明实板调度能达到满状态。
 
+接收准入回归核对运行层在 SDK 创建后、启动前安装回调，安装失败回收全部已拥有资源；回调在 SDK 任务身份下不分配、不读 outbox，三条完整消息占满时拒绝开始下一包，已有 partial 占用最后一槽时仍允许续片，owner 消费后恢复，停止／再次启动保持安装。上述直接注入第四条片的旧用例及 IRAM fixture 有意绕过核心 gate，继续作为防御清理负控；它们不证明新生产路径有四个消息 owner 同存。真实核心必须另外验证包边界、暂停期间出站与停止、未完成包不提前 PUBACK，以及恢复后的原字节和顺序；宿主 fake 不执行这些协议行为。
+
 可选活动观测的定向回归在真实 tuple 扫描的 SDK getter 中注入阶段结束、context／phase／call 切换，核对前后身份不同不授予同存；无活动、迟开始、无效字段、负／倒退时钟和失败 outbox 亦不交付。有效同值与较低占用样本分别按真实值交付，不复用历史峰值；完整 DATA 和历史 getter 不调用 observer。回调断言位于资源锁外，安装／移除限定原 owner 与停止状态，失败 stop 不允许卸载，重新创建不继承回调。观察实例失效后不自动恢复资格；这些确定性交错不替代 FreeRTOS 并发或设备 Flash 同存实测。
 
 [ESP32 IRAM 溢出回归](iram-overflow/README.md)用 pure RAM app 在真实 ESP32 CPU、IRAM 与 FreeRTOS 上运行本仓接收实现，检查第四条完整消息无法入槽时是否停止会话并报告队列错误。client API／事件仍由 fake 注入，不代表 Broker、TLS 或 Base 联合负载验收；原版与修正版的实际对照见[检查点](../docs/verification/mqtt-iram-overflow-checkpoint.md)。
@@ -43,6 +45,7 @@ bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-qos1 qos1-ack
 bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-tls tls
 bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-lifecycle lifecycle
 bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-fragments receive-fragments
+bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-linux-broker-backpressure receive-backpressure
 ```
 
 输出目录放在仓外，每个场景使用独立目录。脚本通过组件 CMake 执行固定 SDK/lwIP 检查；`full` 与 `unsub-only` 核对新 clean session 的 Broker 订阅集、旧 SUB/UNSUB 不重放，以及混合 QoS1 PUBLISH 的 `DUP=1` 重发与 PUBACK。`qos1-ack` 使用 5120 字节出站载荷，由隔离 Broker 逐字节核对，独立核对同一连接丢 PUBACK 后按原 ID、原载荷和 `DUP=1` 重发，重复 PUBACK 只产生一次完成事件；还核对入站 QoS1 重投两次交付、两次回 PUBACK、断线后重发以及最终 outbox 清空。`tls` 关闭明文实验开关，在仅本机回环的临时 TLS Broker 上运行真实核心：正确 CA 与主机名完成 SUBACK/QoS1 PUBACK，错误 CA 与主机名均拒绝，可信时间未就绪时不启动。测试证书与密钥只在权限受限的仓外临时目录生成并在退出时删除。Linux 结果不代表两台 ESP 实板、实验 Wi-Fi、生产 Broker 或 P3-07 验收；详见 [TLS 回归记录](../docs/verification/mqtt-tls-linux.md)。
@@ -62,6 +65,8 @@ EMQTT_TEST_POLL_MS=50 bash tests/linux-broker/run.sh "$PWD" /tmp/esp-mqtt-enqueu
 这是受控入队时机的延迟复现，不是自然负载的平均延迟。输出 `latency.json` 还记录 3 秒空闲期间的整个 Linux 测试进程 CPU 时间和轮询次数；它们不是 ESP 功耗或 CPU 测量。端到端吞吐包含真实宿主调度、TCP 和回复处理开销，不能直接外推设备、TLS、公网 Broker、Flash 写入或 OTA 总期限资格。启用自定义配置时，消费者仍须核对全部生成配置与实际预处理结果，防止把其他配置变化误归因于轮询参数。
 
 `receive-fragments` 以 50 ms 轮询运行真实核心，延迟发送首个接收缓冲、固定报头、多字节 remaining length 及大 PUBLISH 后续 DATA 片。分片有实际进展时允许整包超过 3 秒；分别停在载荷中部和半个报头且无进展时，按配置的 3 秒网络期限断开，另覆盖载荷中途 EOF；未完成报文不能收到 PUBACK，重连后须逐字节交付下一包。同步发送心跳并检查每次异步入队不超过 250 ms，避免用持锁阻塞读掩盖提前断线。每次使用尚未生成 sdkconfig 的独立输出目录；设 `EMQTT_FRAGMENT_TOPIC_ALL=1` 可验证所有 DATA 片都携带 Topic 的配置及断开后的清理。真实 TCP 结果不代替 TLS、MQTT 5 或实板负载验收。
+
+`receive-backpressure` 使用真实核心与回环 TCP，连续发送四条 4096 B 消息；前三槽满时第四条不能提前交付或收到 PUBACK，owner 恢复后须按原字节和顺序完成。暂停期间另核出站发送、保活和满槽停止清理。三个受控分片子例在实际读取首字节、半个 remaining length 或部分正文后关闭准入，验证当前包继续、下一包暂停，以及清除回调后同实例重启恢复默认接收。测试 wrapper 只观察真实 transport 读取并改变测试准入值，不伪造读取结果；跨进程顺序断言统一使用 `CLOCK_MONOTONIC`。这些测试不代替消费者固件、TLS 下满槽或实板容量验收。
 
 新版通过和旧版复现的精确对照见[订阅控制报文断线回归](../docs/verification/mqtt-control-reconnect-linux.md)。
 [QoS1 ACK 与重投回归](../docs/verification/mqtt-qos1-ack-linux.md)记录独立真实核心场景及事件语义。

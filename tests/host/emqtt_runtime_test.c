@@ -111,14 +111,18 @@ TaskHandle_t xTaskGetCurrentTaskHandle(void) { return (void *)current_task; }
 static int64_t now_us;
 int64_t esp_timer_get_time(void) { assert(!critical_depth); return now_us; }
 
-struct esp_mqtt_client { bool started; };
+struct esp_mqtt_client {
+    bool started;
+    emqtt_receive_ready_callback_t receive_ready;
+    void *receive_ready_context;
+};
 static struct esp_mqtt_client sdk;
 static esp_mqtt_client_config_t configured;
 static esp_event_handler_t callback;
 static void *callback_arg;
 static bool init_fail, live_client;
 static int destroy_error;
-static int register_error, start_error, stop_error, enqueue_result = 41, subscribe_result = 31, unsubscribe_result = 32;
+static int register_error, receive_ready_error, start_error, stop_error, enqueue_result = 41, subscribe_result = 31, unsubscribe_result = 32;
 static unsigned stop_calls, subscriptions, enqueues;
 static int submitted_topic_count;
 static emqtt_subscription_t submitted_topics[8];
@@ -127,6 +131,7 @@ static int sent_length, sent_qos;
 esp_mqtt_client_handle_t esp_mqtt_client_init(const esp_mqtt_client_config_t *config)
 {
     assert(!live_client); if (init_fail) return NULL;
+    memset(&sdk, 0, sizeof sdk);
     live_client = true;
     configured = *config;
     /* Match the real SDK: strings/will are copied, CA remains borrowed. */
@@ -142,6 +147,16 @@ esp_mqtt_client_handle_t esp_mqtt_client_init(const esp_mqtt_client_config_t *co
     configured.session.last_will.msg = will;
     return &sdk;
 }
+esp_err_t emqtt_client_set_receive_ready_callback(esp_mqtt_client_handle_t client,
+        emqtt_receive_ready_callback_t ready, void *context)
+{
+    assert(client == &sdk && !sdk.started && !callback_active);
+    assert(ready && context);
+    if (receive_ready_error) return receive_ready_error;
+    sdk.receive_ready = ready;
+    sdk.receive_ready_context = context;
+    return ESP_OK;
+}
 esp_err_t esp_mqtt_client_register_event(esp_mqtt_client_handle_t client, esp_mqtt_event_id_t id,
                                         esp_event_handler_t handler, void *arg)
 {
@@ -150,6 +165,7 @@ esp_err_t esp_mqtt_client_register_event(esp_mqtt_client_handle_t client, esp_mq
 esp_err_t esp_mqtt_client_start(esp_mqtt_client_handle_t client)
 {
     assert(client == &sdk && !callback_active && !sdk.started);
+    assert(sdk.receive_ready && sdk.receive_ready_context);
     if (!start_error) sdk.started = true;
     return start_error;
 }
@@ -169,6 +185,7 @@ esp_err_t esp_mqtt_client_destroy(esp_mqtt_client_handle_t client)
     free((void *)configured.session.last_will.topic);
     free((void *)configured.session.last_will.msg);
     memset(&configured, 0, sizeof configured);
+    memset(&sdk, 0, sizeof sdk);
     live_client = false; return ESP_OK;
 }
 int esp_mqtt_client_subscribe_multiple(esp_mqtt_client_handle_t client, const esp_mqtt_topic_t *topics, int count)
@@ -228,6 +245,58 @@ static void connect_ready(emqtt_runtime_t *r)
     emit(MQTT_EVENT_SUBSCRIBED, (esp_mqtt_event_t){.msg_id = subscribe_result, .data = &grant, .data_len = 1});
     assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_READY);
     assert(emqtt_state(r) == EMQTT_READY);
+}
+
+static bool sdk_receive_ready(void)
+{
+    assert(sdk.started && sdk.receive_ready && !critical_depth);
+    const unsigned reads = outbox_reads, allocations = dynamic_attempts;
+    current_task = 2; /* Admission belongs to the SDK task, not the owner. */
+    const bool ready = sdk.receive_ready(sdk.receive_ready_context);
+    current_task = 1;
+    assert(outbox_reads == reads && dynamic_attempts == allocations);
+    return ready;
+}
+
+static void receive_admission(void)
+{
+    emqtt_runtime_t *r = NULL;
+    emqtt_config_t c = config();
+    assert(emqtt_create(&c, &r) == ESP_OK);
+    assert(emqtt_start(r, true, true) == ESP_OK);
+    connect_ready(r);
+    assert(sdk_receive_ready());
+    for (int id = 1; id <= 2; ++id) {
+        emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = id, .topic = "unit/in", .topic_len = 7,
+            .data = "x", .data_len = 1, .total_data_len = 1, .qos = 1});
+        assert(sdk_receive_ready());
+    }
+    /* A partial message owns the final slot. It must finish even though no
+     * slot remains for the following packet. */
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 3, .topic = "unit/in", .topic_len = 7,
+        .data = "y", .data_len = 1, .total_data_len = 2, .qos = 1});
+    assert(sdk_receive_ready());
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 3, .data = "z", .data_len = 1,
+        .total_data_len = 2, .current_data_offset = 1, .qos = 1});
+    assert(!sdk_receive_ready() && live_messages == 3);
+    assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE && output.message.message_id == 1);
+    assert(sdk_receive_ready());
+    emit(MQTT_EVENT_DATA, (esp_mqtt_event_t){.msg_id = 4, .topic = "unit/in", .topic_len = 7,
+        .data = "q", .data_len = 1, .total_data_len = 1, .qos = 1});
+    assert(!sdk_receive_ready());
+    for (int id = 2; id <= 4; ++id) {
+        assert(emqtt_poll(r, &output) && output.kind == EMQTT_EVENT_MESSAGE && output.message.message_id == id);
+        if (id == 3) assert(output.message.length == 2 && !memcmp(output.message.payload, "yz", 2));
+        assert(sdk_receive_ready());
+    }
+    assert(!emqtt_poll(r, &output));
+    assert(emqtt_stop(r) == ESP_OK);
+    assert(sdk.receive_ready && sdk.receive_ready(sdk.receive_ready_context));
+    assert(emqtt_start(r, true, true) == ESP_OK);
+    connect_ready(r);
+    assert(sdk_receive_ready());
+    assert(emqtt_destroy(r) == ESP_OK);
+    assert(!sdk.receive_ready && !live_messages && !live_storage && !live_queues);
 }
 
 static void partial_during_free(void)
@@ -416,6 +485,9 @@ int main(void)
     assert(emqtt_create(&c, &r) == ESP_ERR_NO_MEM && !live_queues); init_fail = false;
     register_error = ESP_FAIL;
     assert(emqtt_create(&c, &r) == ESP_FAIL && !live_queues && !live_client); register_error = 0;
+    receive_ready_error = ESP_FAIL;
+    assert(emqtt_create(&c, &r) == ESP_FAIL && !live_queues && !live_client && !live_storage);
+    receive_ready_error = 0;
     assert(emqtt_create(&c, &r) == ESP_OK && live_messages == 0);
     assert(emqtt_create(&c, &r) == ESP_ERR_INVALID_STATE);
     assert(configured.session.protocol_ver == MQTT_PROTOCOL_V_3_1_1 && !configured.session.disable_clean_session);
@@ -925,6 +997,7 @@ int main(void)
     assert(emqtt_get_capacity_snapshot(r, &peak) && peak.runtime_instance > instance && !peak.rx_peak_valid);
     assert(emqtt_destroy(r) == ESP_OK && !live_storage && !live_messages && !critical_depth);
     check_activity_observer();
+    receive_admission();
     puts("  mqtt_runtime   passed (SDK event injection; not Broker/hardware acceptance)");
     return 0;
 }

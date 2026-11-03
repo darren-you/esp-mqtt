@@ -379,6 +379,15 @@ static void drain(emqtt_runtime_t *r)
     r->faulted = false;
 }
 
+static bool receive_ready(void *context)
+{
+    emqtt_runtime_t *r = context;
+    /* SDK task only; the owner can return slots concurrently. The SDK alone
+     * reserves a slot, so an available slot remains available until this
+     * packet's first DATA callback. Never use the owner-only API here. */
+    return r->receiver_message != NULL || uxQueueMessagesWaiting(r->free_slots) != 0;
+}
+
 static esp_err_t api_result(int id)
 {
     return id == -2 ? ESP_ERR_EMQTT_OUTBOX_FULL : id < 0 ? ESP_FAIL : ESP_OK;
@@ -433,6 +442,8 @@ esp_err_t emqtt_create(const emqtt_config_t *config, emqtt_runtime_t **out)
     };
     r->client = esp_mqtt_client_init(&official);
     if (!r->client) goto fail;
+    failure = emqtt_client_set_receive_ready_callback(r->client, receive_ready, r);
+    if (failure != ESP_OK) goto fail;
     failure = esp_mqtt_client_register_event(r->client, MQTT_EVENT_ANY, on_event, r);
     if (failure != ESP_OK) goto fail;
     r->capacity.counters_valid = s_runtime_instance != UINT32_MAX;
