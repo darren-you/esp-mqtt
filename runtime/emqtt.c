@@ -430,11 +430,12 @@ esp_err_t emqtt_create(const emqtt_config_t *config, emqtt_runtime_t **out)
             .username = config->username[0] ? config->username : NULL,
             .authentication.password = config->username[0] ? config->password : NULL},
         .session = {.protocol_ver = MQTT_PROTOCOL_V_3_1_1, .disable_clean_session = false,
-            .keepalive = 30, .message_retransmit_timeout = 5000,
+            /* 现场弱网 RTT 约 200 ms、丢包可达 17%：写入与同连接 QoS1 重传须跨过多次 TCP 重传。 */
+            .keepalive = 30, .message_retransmit_timeout = 15000,
             .last_will = {.topic = config->will_topic,
                 .msg = config->will_length ? (const char *)config->will_payload : "",
                 .msg_len = (int)config->will_length, .qos = config->will_qos, .retain = config->will_retain}},
-        .network = {.reconnect_timeout_ms = 2000, .timeout_ms = 3000, .disable_auto_reconnect = false},
+        .network = {.reconnect_timeout_ms = 2000, .timeout_ms = 10000, .disable_auto_reconnect = false},
         .task = {.priority = 5, .stack_size = 6144},
         /* 八个最大长度 filter 的单次 SUBSCRIBE 需要超过 2 KiB。 */
         .buffer = {.size = 1024, .out_size = 2304},

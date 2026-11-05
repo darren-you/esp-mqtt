@@ -126,8 +126,8 @@ class QoS1Broker(Broker):
         if self.delayed_id is None or self.reconnect_id is None or self.delayed_id == self.reconnect_id:
             raise AssertionError("wrong outgoing message IDs")
         if self.delayed_first_at is None or self.delayed_repeat_at is None or \
-                self.delayed_repeat_at - self.delayed_first_at < 5:
-            raise AssertionError("lost PUBACK did not cross the 5 s retransmission window")
+                self.delayed_repeat_at - self.delayed_first_at < 15:
+            raise AssertionError("lost PUBACK did not cross the 15 s retransmission window")
         publishes = [(index, detail) for _, index, kind, detail in self.events if kind == "publish"]
         expected = [
             (1, (TOPIC_PUBLISH, "delayed-ack" + "x" * (5120 - 11), self.delayed_id, False)),
